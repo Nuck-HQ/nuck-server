@@ -12,6 +12,7 @@ pub mod channels;
 pub mod error;
 pub mod guilds;
 pub mod health;
+pub mod invites;
 pub mod me;
 pub mod page;
 pub mod privileged;
@@ -73,6 +74,29 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/_nuck/v1/channels/{channel_id}",
             patch(guilds::update_channel).delete(guilds::delete_channel),
+        )
+        // Invites & joining (ADR 0011/0025).
+        .route(
+            "/_nuck/v1/guilds/{guild_id}/invites",
+            post(invites::create_invite).get(invites::list_invites),
+        )
+        .route(
+            "/_nuck/v1/guilds/{guild_id}/invites/{code}",
+            delete(invites::revoke_invite),
+        )
+        .route("/_nuck/v1/invites/{code}", get(invites::preview_invite))
+        .route("/_nuck/v1/invites/{code}/redeem", post(invites::redeem_invite))
+        .route(
+            "/_nuck/v1/guilds/{guild_id}/join-requests",
+            post(invites::create_join_request).get(invites::list_join_requests),
+        )
+        .route(
+            "/_nuck/v1/guilds/{guild_id}/join-requests/{user_id}/approve",
+            post(invites::approve_join_request),
+        )
+        .route(
+            "/_nuck/v1/guilds/{guild_id}/join-requests/{user_id}/deny",
+            post(invites::deny_join_request),
         )
         .route(
             "/_nuck/v1/channels/{channel_id}/overrides",

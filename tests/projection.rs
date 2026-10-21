@@ -42,7 +42,7 @@ async fn setup() -> Option<(Projection, MutexGuard<'static, ()>)> {
     db::migrate(&pool).await.expect("run migrations");
     sqlx::query(
         "TRUNCATE guilds, guild_owners, roles, members, memberships, channels, overrides, bans,
-                  invites, audit_log, messages, processed_events, projection_state",
+                  invites, join_requests, audit_log, messages, processed_events, projection_state",
     )
     .execute(&pool)
     .await

@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use nuck_protocol::events::event_types as et;
 use nuck_protocol::events::{
     BanEventContent, ChannelEventContent, GuildSettingsEventContent, InviteEventContent,
-    MemberEventContent, OverrideEventContent, RoleEventContent,
+    JoinRequestEventContent, MemberEventContent, OverrideEventContent, RoleEventContent,
 };
 use serde::{Deserialize, Serialize};
 
@@ -18,8 +18,8 @@ pub use crate::matrix::RawEvent;
 
 use super::ProjectionOp;
 use super::models::{
-    BanRow, ChannelRow, GuildOwnerRow, GuildRow, InviteRow, MemberRow, MembershipRow, MessageRow,
-    OverrideRow, RoleRow,
+    BanRow, ChannelRow, GuildOwnerRow, GuildRow, InviteRow, JoinRequestRow, MemberRow,
+    MembershipRow, MessageRow, OverrideRow, RoleRow,
 };
 
 /// An AppService transaction body.
@@ -133,16 +133,43 @@ pub fn project(event: &RawEvent) -> Result<Option<ProjectionOp>> {
             }
         }
         et::INVITE => {
-            let c: InviteEventContent = content(event)?;
-            ProjectionOp::Invite(InviteRow {
-                guild_id: event.room_id.clone(),
-                code_hash: event.state_key().to_owned(),
-                max_uses: c.max_uses.map(|u| u as i32),
-                uses: c.uses as i32,
-                expires_at: c.expires_at.map(|e| e as i64),
-                created_by: Some(c.created_by.to_string()),
-                event_id: event.event_id.clone(),
-            })
+            if is_removal(event) {
+                ProjectionOp::RemoveInvite {
+                    guild_id: event.room_id.clone(),
+                    code_hash: event.state_key().to_owned(),
+                }
+            } else {
+                let c: InviteEventContent = content(event)?;
+                ProjectionOp::Invite(InviteRow {
+                    guild_id: event.room_id.clone(),
+                    code_hash: event.state_key().to_owned(),
+                    // The plaintext code is local-only; federated state carries the hash.
+                    code: None,
+                    max_uses: c.max_uses.map(|u| u as i32),
+                    uses: c.uses as i32,
+                    expires_at: c.expires_at.map(|e| e as i64),
+                    created_by: Some(c.created_by.to_string()),
+                    event_id: event.event_id.clone(),
+                })
+            }
+        }
+        et::JOIN_REQUEST => {
+            if is_removal(event) {
+                ProjectionOp::RemoveJoinRequest {
+                    guild_id: event.room_id.clone(),
+                    user_id: event.state_key().to_owned(),
+                }
+            } else {
+                let c: JoinRequestEventContent = content(event)?;
+                ProjectionOp::JoinRequest(JoinRequestRow {
+                    guild_id: event.room_id.clone(),
+                    user_id: event.state_key().to_owned(),
+                    message: c.message,
+                    status: enum_str(&c.status),
+                    requested_at: c.requested_at as i64,
+                    event_id: event.event_id.clone(),
+                })
+            }
         }
         // Guild ownership: only Matrix Spaces can be guilds (ADR 0005), and the owner
         // is the room creator (ADR 0020/0038).

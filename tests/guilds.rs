@@ -69,6 +69,7 @@ enum Recorded {
 struct Fake {
     tokens: HashMap<String, String>,
     writes: Arc<Mutex<Vec<Recorded>>>,
+    joins: Arc<Mutex<Vec<(String, String)>>>,
     next_event: Arc<AtomicU64>,
 }
 
@@ -78,11 +79,20 @@ impl Fake {
         tokens.insert(USER_TOKEN.to_owned(), ACTOR.to_owned());
         tokens.insert(BOT_TOKEN.to_owned(), BOT.to_owned());
         tokens.insert(OTHER_TOKEN.to_owned(), OTHER.to_owned());
-        Self { tokens, writes: Arc::new(Mutex::new(Vec::new())), next_event: Arc::new(AtomicU64::new(1)) }
+        Self {
+            tokens,
+            writes: Arc::new(Mutex::new(Vec::new())),
+            joins: Arc::new(Mutex::new(Vec::new())),
+            next_event: Arc::new(AtomicU64::new(1)),
+        }
     }
 
     fn writes(&self) -> Vec<Recorded> {
         self.writes.lock().unwrap().clone()
+    }
+
+    fn joins(&self) -> Vec<(String, String)> {
+        self.joins.lock().unwrap().clone()
     }
 }
 
@@ -103,7 +113,19 @@ fn fake_router(fake: Fake) -> Router {
             put(fake_send_state_singleton),
         )
         .route("/_matrix/client/v3/rooms/{room_id}/{action}", post(fake_membership))
+        .route("/_synapse/admin/v1/join/{room_id}", post(fake_admin_join))
         .with_state(fake)
+}
+
+/// The admin force-join used by invite redemption / join approval (ADR 0011).
+async fn fake_admin_join(
+    State(fake): State<Fake>,
+    Path(room_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let user_id = body.get("user_id").and_then(Value::as_str).unwrap_or_default().to_owned();
+    fake.joins.lock().unwrap().push((room_id, user_id));
+    Json(json!({}))
 }
 
 async fn fake_whoami(State(fake): State<Fake>, headers: HeaderMap) -> Response {
@@ -216,7 +238,7 @@ async fn setup() -> Option<Harness> {
     db::migrate(&pool).await.expect("run migrations");
     sqlx::query(
         "TRUNCATE guilds, guild_owners, roles, members, memberships, channels, overrides, bans,
-                  invites, audit_log, messages, processed_events, projection_state",
+                  invites, join_requests, audit_log, messages, processed_events, projection_state",
     )
     .execute(&pool)
     .await
@@ -1619,4 +1641,222 @@ async fn unban_member_unbans_and_clears_the_ban() {
         if event_type == "space.nuck.ban.v1"
             && state_key == OTHER
             && content.as_object().is_some_and(|o| o.is_empty()))));
+}
+
+// --- Invites & joining (ADR 0011/0025) -------------------------------------
+
+/// A guild in `approval` join mode (ADR 0025).
+async fn seed_approval_guild(p: &Projection) {
+    seed_admin(p).await;
+    p.upsert_guild(&GuildRow {
+        guild_id: GUILD.to_owned(),
+        home_server: SERVER.to_owned(),
+        name: Some("Guild".to_owned()),
+        join_mode: Some("approval".to_owned()),
+        directory_visibility: Some("hidden".to_owned()),
+        default_notification_level: Some("mentions_only".to_owned()),
+        event_id: "$guild-approval".to_owned(),
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn create_invite_returns_a_shareable_code() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("/_nuck/v1/guilds/{GUILD}/invites"),
+            Some(USER_TOKEN),
+            Some(json!({ "max_uses": 5 })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    let code = body["code"].as_str().unwrap();
+    assert!(code.starts_with("nuck_"), "opaque code");
+    assert!(body["url"].as_str().unwrap().contains(code));
+
+    // The federated state event is keyed by the hash, not the code.
+    let write = h.fake.writes().into_iter().find_map(|w| match w {
+        Recorded::State { event_type, state_key, content, .. }
+            if event_type == "space.nuck.invite.v1" =>
+        {
+            Some((state_key, content))
+        }
+        _ => None,
+    });
+    let (state_key, content) = write.expect("an invite state write");
+    assert_eq!(state_key.len(), 64, "the state key is a hex hash");
+    assert!(!state_key.contains(code), "the plaintext code does not federate");
+    assert_eq!(content["uses"], 0);
+
+    // The plaintext code is recorded locally so it can be listed.
+    let invites = h.projection.list_invites(GUILD).await.unwrap();
+    assert_eq!(invites.len(), 1);
+    assert_eq!(invites[0].code.as_deref(), Some(code));
+}
+
+#[tokio::test]
+async fn preview_is_public_and_redeem_joins_the_caller() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+
+    let created: Value = serde_json::from_slice(
+        &body_bytes(
+            h.app
+                .clone()
+                .oneshot(request(
+                    "POST",
+                    &format!("/_nuck/v1/guilds/{GUILD}/invites"),
+                    Some(USER_TOKEN),
+                    Some(json!({})),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await,
+    )
+    .unwrap();
+    let code = created["code"].as_str().unwrap().to_owned();
+
+    // Public preview: no token.
+    let preview = h
+        .app
+        .clone()
+        .oneshot(request("GET", &format!("/_nuck/v1/invites/{code}"), None, None))
+        .await
+        .unwrap();
+    assert_eq!(preview.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(preview).await).unwrap();
+    assert_eq!(body["guild_id"], GUILD);
+    assert_eq!(body["member_count"], 1);
+    assert_eq!(body["join_mode"], "invite_only");
+
+    // Redeem force-joins the caller.
+    let redeem = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("/_nuck/v1/invites/{code}/redeem"),
+            Some(OTHER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(redeem.status(), StatusCode::OK);
+    assert!(
+        h.fake.joins().contains(&(GUILD.to_owned(), OTHER.to_owned())),
+        "the redeemer is force-joined to the guild"
+    );
+}
+
+#[tokio::test]
+async fn revoke_invite_empties_the_state() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+
+    let created: Value = serde_json::from_slice(
+        &body_bytes(
+            h.app
+                .clone()
+                .oneshot(request(
+                    "POST",
+                    &format!("/_nuck/v1/guilds/{GUILD}/invites"),
+                    Some(USER_TOKEN),
+                    Some(json!({})),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await,
+    )
+    .unwrap();
+    let code = created["code"].as_str().unwrap().to_owned();
+
+    let revoked = h
+        .app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("/_nuck/v1/guilds/{GUILD}/invites/{code}"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), StatusCode::OK);
+    assert!(
+        h.fake.writes().iter().any(|w| matches!(w, Recorded::State { event_type, content, .. }
+            if event_type == "space.nuck.invite.v1"
+                && content.as_object().is_some_and(|o| o.is_empty()))),
+        "revocation writes empty invite content"
+    );
+    assert!(h.projection.list_invites(GUILD).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn join_request_is_written_pending_for_a_non_member() {
+    let Some(h) = setup().await else { return };
+    seed_approval_guild(&h.projection).await;
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("/_nuck/v1/guilds/{GUILD}/join-requests"),
+            Some(OTHER_TOKEN),
+            Some(json!({ "message": "let me in" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(body["status"], "pending");
+
+    assert!(h.fake.writes().iter().any(|w| matches!(w, Recorded::State { event_type, state_key, content, .. }
+        if event_type == "space.nuck.join_request.v1"
+            && state_key == OTHER
+            && content["status"] == "pending")));
+}
+
+#[tokio::test]
+async fn approving_a_join_request_force_joins_the_applicant() {
+    let Some(h) = setup().await else { return };
+    seed_approval_guild(&h.projection).await;
+    h.projection
+        .upsert_join_request(&nuck_server::projection::JoinRequestRow {
+            guild_id: GUILD.to_owned(),
+            user_id: OTHER.to_owned(),
+            message: Some("please".to_owned()),
+            status: "pending".to_owned(),
+            requested_at: 1,
+            event_id: "$jr".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("/_nuck/v1/guilds/{GUILD}/join-requests/{OTHER}/approve"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(h.fake.joins().contains(&(GUILD.to_owned(), OTHER.to_owned())));
+    assert!(h.fake.writes().iter().any(|w| matches!(w, Recorded::State { event_type, content, .. }
+        if event_type == "space.nuck.join_request.v1" && content["status"] == "approved")));
 }

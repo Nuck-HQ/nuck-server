@@ -114,10 +114,25 @@ pub struct BanRow {
 pub struct InviteRow {
     pub guild_id: String,
     pub code_hash: String,
+    /// The plaintext code, kept **local** (never federated); `None` if only the
+    /// federated hash is known.
+    pub code: Option<String>,
     pub max_uses: Option<i32>,
     pub uses: i32,
     pub expires_at: Option<i64>,
     pub created_by: Option<String>,
+    pub event_id: String,
+}
+
+/// A join request (`space.nuck.join_request.v1`, ADR 0025).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct JoinRequestRow {
+    pub guild_id: String,
+    pub user_id: String,
+    pub message: Option<String>,
+    /// `pending`, `approved`, or `denied`.
+    pub status: String,
+    pub requested_at: i64,
     pub event_id: String,
 }
 

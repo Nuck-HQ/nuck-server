@@ -46,12 +46,15 @@ pub enum ProjectionOp {
     Override(OverrideRow),
     Ban(BanRow),
     Invite(InviteRow),
+    JoinRequest(JoinRequestRow),
     Message(MessageRow),
     RemoveGuild(String),
     RemoveRole { guild_id: String, role_id: String },
     RemoveMember { guild_id: String, user_id: String },
     RemoveChannel { channel_id: String },
     RemoveBan { guild_id: String, user_id: String },
+    RemoveInvite { guild_id: String, code_hash: String },
+    RemoveJoinRequest { guild_id: String, user_id: String },
 }
 
 /// The projection: an idempotent, rebuildable index over federated state (ADR 0019).
@@ -85,6 +88,7 @@ impl Projection {
             ProjectionOp::Override(r) => self.upsert_override(&r).await,
             ProjectionOp::Ban(r) => self.upsert_ban(&r).await,
             ProjectionOp::Invite(r) => self.upsert_invite(&r).await,
+            ProjectionOp::JoinRequest(r) => self.upsert_join_request(&r).await,
             ProjectionOp::Message(r) => self.upsert_message(&r).await,
             ProjectionOp::RemoveGuild(guild_id) => self.delete_guild(&guild_id).await,
             ProjectionOp::RemoveRole { guild_id, role_id } => {
@@ -96,6 +100,12 @@ impl Projection {
             ProjectionOp::RemoveChannel { channel_id } => self.delete_channel(&channel_id).await,
             ProjectionOp::RemoveBan { guild_id, user_id } => {
                 self.delete_ban(&guild_id, &user_id).await
+            }
+            ProjectionOp::RemoveInvite { guild_id, code_hash } => {
+                self.delete_invite(&guild_id, &code_hash).await
+            }
+            ProjectionOp::RemoveJoinRequest { guild_id, user_id } => {
+                self.delete_join_request(&guild_id, &user_id).await
             }
         }
     }
@@ -389,9 +399,10 @@ impl Projection {
     pub async fn upsert_invite(&self, i: &InviteRow) -> Result<()> {
         sqlx::query(
             "INSERT INTO invites
-                (guild_id, code_hash, max_uses, uses, expires_at, created_by, event_id, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+                (guild_id, code_hash, code, max_uses, uses, expires_at, created_by, event_id, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
              ON CONFLICT (guild_id, code_hash) DO UPDATE SET
+                code = COALESCE(EXCLUDED.code, invites.code),
                 max_uses = EXCLUDED.max_uses,
                 uses = EXCLUDED.uses,
                 expires_at = EXCLUDED.expires_at,
@@ -401,6 +412,7 @@ impl Projection {
         )
         .bind(&i.guild_id)
         .bind(&i.code_hash)
+        .bind(&i.code)
         .bind(i.max_uses)
         .bind(i.uses)
         .bind(i.expires_at)
@@ -409,6 +421,129 @@ impl Projection {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// A guild's invites.
+    pub async fn list_invites(&self, guild_id: &str) -> Result<Vec<InviteRow>> {
+        let rows = sqlx::query_as::<_, InviteRow>(
+            "SELECT guild_id, code_hash, code, max_uses, uses, expires_at, created_by, event_id
+             FROM invites WHERE guild_id = $1
+             ORDER BY code_hash ASC",
+        )
+        .bind(guild_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Look up an invite by its **code hash** across all guilds (redeem/preview).
+    pub async fn get_invite_by_hash(&self, code_hash: &str) -> Result<Option<InviteRow>> {
+        let row = sqlx::query_as::<_, InviteRow>(
+            "SELECT guild_id, code_hash, code, max_uses, uses, expires_at, created_by, event_id
+             FROM invites WHERE code_hash = $1",
+        )
+        .bind(code_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Delete an invite (revoke).
+    pub async fn delete_invite(&self, guild_id: &str, code_hash: &str) -> Result<()> {
+        sqlx::query("DELETE FROM invites WHERE guild_id = $1 AND code_hash = $2")
+            .bind(guild_id)
+            .bind(code_hash)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Upsert a join request.
+    pub async fn upsert_join_request(&self, r: &JoinRequestRow) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO join_requests
+                (guild_id, user_id, message, status, requested_at, event_id, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, now())
+             ON CONFLICT (guild_id, user_id) DO UPDATE SET
+                message = EXCLUDED.message,
+                status = EXCLUDED.status,
+                requested_at = EXCLUDED.requested_at,
+                event_id = EXCLUDED.event_id,
+                updated_at = now()",
+        )
+        .bind(&r.guild_id)
+        .bind(&r.user_id)
+        .bind(&r.message)
+        .bind(&r.status)
+        .bind(r.requested_at)
+        .bind(&r.event_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Delete a join request.
+    pub async fn delete_join_request(&self, guild_id: &str, user_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM join_requests WHERE guild_id = $1 AND user_id = $2")
+            .bind(guild_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// A guild's join requests, oldest first.
+    pub async fn list_join_requests(&self, guild_id: &str) -> Result<Vec<JoinRequestRow>> {
+        let rows = sqlx::query_as::<_, JoinRequestRow>(
+            "SELECT guild_id, user_id, message, status, requested_at, event_id
+             FROM join_requests WHERE guild_id = $1
+             ORDER BY requested_at ASC, user_id ASC",
+        )
+        .bind(guild_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// One join request, if any.
+    pub async fn get_join_request(
+        &self,
+        guild_id: &str,
+        user_id: &str,
+    ) -> Result<Option<JoinRequestRow>> {
+        let row = sqlx::query_as::<_, JoinRequestRow>(
+            "SELECT guild_id, user_id, message, status, requested_at, event_id
+             FROM join_requests WHERE guild_id = $1 AND user_id = $2",
+        )
+        .bind(guild_id)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Whether a user is banned from a guild.
+    pub async fn get_ban(&self, guild_id: &str, user_id: &str) -> Result<Option<BanRow>> {
+        let row = sqlx::query_as::<_, BanRow>(
+            "SELECT guild_id, user_id, reason, banned_by, created_at, event_id
+             FROM bans WHERE guild_id = $1 AND user_id = $2",
+        )
+        .bind(guild_id)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// The number of joined members in a guild.
+    pub async fn count_guild_members(&self, guild_id: &str) -> Result<i64> {
+        let row: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM memberships WHERE room_id = $1 AND membership = 'join'",
+        )
+        .bind(guild_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
     }
 
     /// Append an audit entry (idempotent on `event_id`).
@@ -510,6 +645,7 @@ impl Projection {
             "DELETE FROM members WHERE guild_id = $1 AND event_id <> ALL($2::text[])",
             "DELETE FROM bans WHERE guild_id = $1 AND event_id <> ALL($2::text[])",
             "DELETE FROM invites WHERE guild_id = $1 AND event_id <> ALL($2::text[])",
+            "DELETE FROM join_requests WHERE guild_id = $1 AND event_id <> ALL($2::text[])",
             "DELETE FROM channels WHERE guild_id = $1 AND event_id <> ALL($2::text[])",
             "DELETE FROM overrides WHERE channel_id = $1 AND event_id <> ALL($2::text[])",
             "DELETE FROM memberships WHERE room_id = $1 AND event_id <> ALL($2::text[])",

@@ -34,6 +34,10 @@ ruma = { version = "0.17", features = ["events"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Invite-code hashing (ADR 0011): the federated invite state key is the hash of the
+# code, so the plaintext code never federates.
+sha2 = "0.10"
+
 # Derived index store (ADR 0015). Postgres only, always.
 sqlx = { version = "0.9", default-features = false, features = [
     "runtime-tokio",
