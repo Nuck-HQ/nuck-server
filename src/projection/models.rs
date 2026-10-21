@@ -136,6 +136,15 @@ pub struct JoinRequestRow {
     pub event_id: String,
 }
 
+/// A pending registration request (`approval` mode, ADR 0037).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct RegistrationRequestRow {
+    pub id: String,
+    pub username: String,
+    pub user_id: String,
+    pub created_at: i64,
+}
+
 /// An append-only audit entry (ADR 0016).
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct AuditEntry {

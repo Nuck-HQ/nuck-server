@@ -17,6 +17,7 @@ pub mod me;
 pub mod page;
 pub mod privileged;
 pub mod proxy;
+pub mod registration;
 pub mod server_info;
 
 use std::sync::Arc;
@@ -33,6 +34,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(health::healthz))
         .route("/_nuck/v1/server-info", get(server_info::server_info))
         .route("/_nuck/v1/me", get(me::me))
+        // Registration policy (ADR 0037).
+        .route("/_nuck/v1/register/policy", get(registration::policy))
+        .route("/_nuck/v1/register", post(registration::register))
+        .route("/_nuck/v1/register/requests", get(registration::list_requests))
+        .route("/_nuck/v1/register/requests/{id}/approve", post(registration::approve))
+        .route("/_nuck/v1/register/requests/{id}/deny", post(registration::deny))
         // Guild reads (ADR 0005/0013).
         .route("/_nuck/v1/guilds/{guild_id}/members", get(guilds::list_members))
         .route("/_nuck/v1/guilds/{guild_id}/bans", get(guilds::list_bans))

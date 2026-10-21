@@ -223,6 +223,9 @@ mod tests {
             reconcile_interval_secs: 300,
             reconcile_on_startup: true,
             message_backfill_limit: Some(200),
+            registration_mode: "token".to_owned(),
+            registration_token: None,
+            admin_users: Vec::new(),
         }
     }
 

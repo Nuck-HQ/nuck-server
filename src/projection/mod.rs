@@ -546,6 +546,55 @@ impl Projection {
         Ok(row.0)
     }
 
+    /// Record a pending registration request (ADR 0037).
+    pub async fn insert_registration_request(&self, r: &RegistrationRequestRow) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO registration_requests (id, username, user_id, created_at)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&r.id)
+        .bind(&r.username)
+        .bind(&r.user_id)
+        .bind(r.created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Pending registration requests, oldest first (ADR 0037).
+    pub async fn list_registration_requests(&self) -> Result<Vec<RegistrationRequestRow>> {
+        let rows = sqlx::query_as::<_, RegistrationRequestRow>(
+            "SELECT id, username, user_id, created_at FROM registration_requests
+             ORDER BY created_at ASC, id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// One registration request, if any.
+    pub async fn get_registration_request(
+        &self,
+        id: &str,
+    ) -> Result<Option<RegistrationRequestRow>> {
+        let row = sqlx::query_as::<_, RegistrationRequestRow>(
+            "SELECT id, username, user_id, created_at FROM registration_requests WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Delete a registration request (approved or denied).
+    pub async fn delete_registration_request(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM registration_requests WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Append an audit entry (idempotent on `event_id`).
     pub async fn append_audit(&self, a: &AuditEntry) -> Result<()> {
         sqlx::query(

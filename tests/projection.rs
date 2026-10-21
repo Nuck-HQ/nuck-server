@@ -68,6 +68,9 @@ fn app_with(projection: Projection) -> Router {
         reconcile_interval_secs: 300,
         reconcile_on_startup: false,
         message_backfill_limit: None,
+        registration_mode: "token".to_owned(),
+        registration_token: None,
+        admin_users: Vec::new(),
     };
     let substrate = SubstrateClient::from_config(&config);
     api::router(Arc::new(AppState {
@@ -412,6 +415,9 @@ fn reconcile_config() -> Config {
         reconcile_interval_secs: 300,
         reconcile_on_startup: false,
         message_backfill_limit: None,
+        registration_mode: "token".to_owned(),
+        registration_token: None,
+        admin_users: Vec::new(),
     }
 }
 

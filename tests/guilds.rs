@@ -70,6 +70,7 @@ struct Fake {
     tokens: HashMap<String, String>,
     writes: Arc<Mutex<Vec<Recorded>>>,
     joins: Arc<Mutex<Vec<(String, String)>>>,
+    users: Arc<Mutex<Vec<(String, bool)>>>,
     next_event: Arc<AtomicU64>,
 }
 
@@ -83,6 +84,7 @@ impl Fake {
             tokens,
             writes: Arc::new(Mutex::new(Vec::new())),
             joins: Arc::new(Mutex::new(Vec::new())),
+            users: Arc::new(Mutex::new(Vec::new())),
             next_event: Arc::new(AtomicU64::new(1)),
         }
     }
@@ -93,6 +95,10 @@ impl Fake {
 
     fn joins(&self) -> Vec<(String, String)> {
         self.joins.lock().unwrap().clone()
+    }
+
+    fn users(&self) -> Vec<(String, bool)> {
+        self.users.lock().unwrap().clone()
     }
 }
 
@@ -114,7 +120,28 @@ fn fake_router(fake: Fake) -> Router {
         )
         .route("/_matrix/client/v3/rooms/{room_id}/{action}", post(fake_membership))
         .route("/_synapse/admin/v1/join/{room_id}", post(fake_admin_join))
+        .route("/_synapse/admin/v2/users/{user_id}", put(fake_admin_user))
+        .route("/_synapse/admin/v1/users/{user_id}/login", post(fake_admin_login))
         .with_state(fake)
+}
+
+/// Admin user create/modify (registration fulfilment, ADR 0037).
+async fn fake_admin_user(
+    State(fake): State<Fake>,
+    Path(user_id): Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let deactivated = body.get("deactivated").and_then(Value::as_bool).unwrap_or(false);
+    fake.users.lock().unwrap().push((user_id, deactivated));
+    Json(json!({}))
+}
+
+/// Admin login-as, returning a token for the created user (ADR 0028).
+async fn fake_admin_login(
+    State(_fake): State<Fake>,
+    Path(user_id): Path<String>,
+) -> Json<Value> {
+    Json(json!({ "access_token": format!("token-{user_id}"), "device_id": "DEVICE" }))
 }
 
 /// The admin force-join used by invite redemption / join approval (ADR 0011).
@@ -232,6 +259,11 @@ struct Harness {
 }
 
 async fn setup() -> Option<Harness> {
+    setup_with(|_| {}).await
+}
+
+/// Build the harness with a chance to tweak the config (e.g. registration mode).
+async fn setup_with(tweak: impl FnOnce(&mut Config)) -> Option<Harness> {
     let url = std::env::var("TEST_DATABASE_URL").ok()?;
     let guard = lock().lock().await;
     let pool = db::connect(&url).await.expect("connect to TEST_DATABASE_URL");
@@ -253,7 +285,7 @@ async fn setup() -> Option<Harness> {
         let _ = axum::serve(listener, server).await;
     });
 
-    let config = Config {
+    let mut config = Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         server_name: SERVER.to_owned(),
         database_url: None,
@@ -270,7 +302,11 @@ async fn setup() -> Option<Harness> {
         reconcile_interval_secs: 300,
         reconcile_on_startup: false,
         message_backfill_limit: None,
+        registration_mode: "token".to_owned(),
+        registration_token: None,
+        admin_users: vec![ACTOR.to_owned()],
     };
+    tweak(&mut config);
     let substrate = SubstrateClient::from_config(&config);
     let app = api::router(Arc::new(AppState {
         config: Arc::new(config),
@@ -1859,4 +1895,165 @@ async fn approving_a_join_request_force_joins_the_applicant() {
     assert!(h.fake.joins().contains(&(GUILD.to_owned(), OTHER.to_owned())));
     assert!(h.fake.writes().iter().any(|w| matches!(w, Recorded::State { event_type, content, .. }
         if event_type == "space.nuck.join_request.v1" && content["status"] == "approved")));
+}
+
+// --- Registration policy (ADR 0037) ----------------------------------------
+
+#[tokio::test]
+async fn substrate_registration_is_disabled() {
+    let Some(h) = setup().await else { return };
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/_matrix/client/v3/register",
+            None,
+            Some(json!({ "username": "x", "password": "y" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "the substrate's own registration must not be reachable"
+    );
+}
+
+#[tokio::test]
+async fn policy_reports_the_configured_mode() {
+    let Some(h) = setup_with(|c| c.registration_mode = "approval".to_owned()).await else {
+        return;
+    };
+    let response = h
+        .app
+        .clone()
+        .oneshot(request("GET", "/_nuck/v1/register/policy", None, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(body["mode"], "approval");
+    assert_eq!(body["token_required"], false);
+}
+
+#[tokio::test]
+async fn open_registration_creates_an_active_user() {
+    let Some(h) = setup_with(|c| c.registration_mode = "open".to_owned()).await else { return };
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/_nuck/v1/register",
+            None,
+            Some(json!({ "username": "newbie", "password": "pw" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(body["user_id"], "@newbie:example.org");
+    assert_eq!(body["access_token"], "token-@newbie:example.org");
+    assert_eq!(h.fake.users(), vec![("@newbie:example.org".to_owned(), false)]);
+}
+
+#[tokio::test]
+async fn token_registration_requires_the_token() {
+    let Some(h) = setup_with(|c| {
+        c.registration_mode = "token".to_owned();
+        c.registration_token = Some("sekret".to_owned());
+    })
+    .await
+    else {
+        return;
+    };
+
+    let missing = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/_nuck/v1/register",
+            None,
+            Some(json!({ "username": "newbie", "password": "pw" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::FORBIDDEN);
+
+    let ok = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/_nuck/v1/register",
+            None,
+            Some(json!({ "username": "newbie", "password": "pw", "token": "sekret" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn approval_mode_queues_then_activates() {
+    let Some(h) = setup_with(|c| c.registration_mode = "approval".to_owned()).await else {
+        return;
+    };
+
+    let pending = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/_nuck/v1/register",
+            None,
+            Some(json!({ "username": "hopeful", "password": "pw" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(pending.status(), StatusCode::ACCEPTED);
+    let body: Value = serde_json::from_slice(&body_bytes(pending).await).unwrap();
+    let request_id = body["request_id"].as_str().unwrap().to_owned();
+
+    // Created deactivated (no password stored), and queued.
+    assert_eq!(h.fake.users(), vec![("@hopeful:example.org".to_owned(), true)]);
+    let requests = h.projection.list_registration_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+
+    // A non-admin cannot read the queue.
+    let refused = h
+        .app
+        .clone()
+        .oneshot(request("GET", "/_nuck/v1/register/requests", Some(OTHER_TOKEN), None))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+    // Admin sees it and approves; the account is activated and the row dropped.
+    let list = h
+        .app
+        .clone()
+        .oneshot(request("GET", "/_nuck/v1/register/requests", Some(USER_TOKEN), None))
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body: Value = serde_json::from_slice(&body_bytes(list).await).unwrap();
+    assert_eq!(list_body["items"][0]["username"], "hopeful");
+
+    let approve = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("/_nuck/v1/register/requests/{request_id}/approve"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(approve.status(), StatusCode::OK);
+    assert_eq!(h.fake.users().last().unwrap(), &("@hopeful:example.org".to_owned(), false));
+    assert!(h.projection.list_registration_requests().await.unwrap().is_empty());
 }

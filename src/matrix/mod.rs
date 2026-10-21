@@ -106,6 +106,14 @@ struct ProfileBody {
     avatar_url: Option<String>,
 }
 
+/// The result of an admin login-as (ADR 0028).
+#[derive(Debug, Deserialize)]
+struct LoginAs {
+    access_token: String,
+    #[serde(default)]
+    device_id: String,
+}
+
 /// A state event as the C-S API returns it (it may omit `room_id`).
 #[derive(Debug, Deserialize)]
 struct ClientStateEvent {
@@ -289,6 +297,37 @@ impl SubstrateClient {
         let body = serde_json::json!({ "user_id": user_id });
         let _: serde_json::Value = self.admin(Method::POST, &path, Some(body)).await?;
         Ok(())
+    }
+
+    /// Create or modify a user via the admin API (ADR 0028/0037).
+    ///
+    /// Registration is enforced by nuck-server (ADR 0037), so the substrate's own
+    /// registration is closed off (see the C-S proxy) and users are created here.
+    pub async fn admin_create_user(
+        &self,
+        user_id: &str,
+        password: &str,
+        deactivated: bool,
+    ) -> Result<()> {
+        let path = format!("/_synapse/admin/v2/users/{}", encode_path(user_id));
+        let body = serde_json::json!({ "password": password, "deactivated": deactivated });
+        let _: serde_json::Value = self.admin(Method::PUT, &path, Some(body)).await?;
+        Ok(())
+    }
+
+    /// Activate or deactivate an existing user (ADR 0037 approval fulfilment).
+    pub async fn admin_set_deactivated(&self, user_id: &str, deactivated: bool) -> Result<()> {
+        let path = format!("/_synapse/admin/v2/users/{}", encode_path(user_id));
+        let body = serde_json::json!({ "deactivated": deactivated });
+        let _: serde_json::Value = self.admin(Method::PUT, &path, Some(body)).await?;
+        Ok(())
+    }
+
+    /// Mint an access token for a user via the admin login-as endpoint (ADR 0028).
+    pub async fn admin_login(&self, user_id: &str) -> Result<(String, String)> {
+        let path = format!("/_synapse/admin/v1/users/{}/login", encode_path(user_id));
+        let login: LoginAs = self.admin(Method::POST, &path, Some(serde_json::json!({}))).await?;
+        Ok((login.access_token, login.device_id))
     }
 
     // --- Action-bot writes (ADR 0041) --------------------------------------

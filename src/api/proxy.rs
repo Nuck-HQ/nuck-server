@@ -26,6 +26,12 @@ use super::error::ApiErrorResponse;
 
 /// `/_matrix/client/{*rest}` — transparent C-S proxy.
 pub async fn client(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response {
+    // Registration is enforced by nuck-server (ADR 0037), so the substrate's own
+    // registration is closed off: it must not be reachable as a bypass.
+    if is_substrate_register(&req) {
+        return ApiErrorResponse::forbidden("registration is handled by /_nuck/v1/register")
+            .into_response();
+    }
     forward(&state, req).await
 }
 
@@ -133,6 +139,14 @@ async fn forward(state: &AppState, req: Request<Body>) -> Response {
     }
     out.body(Body::from_stream(response.bytes_stream()))
         .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+}
+
+/// Whether this is the substrate's own registration endpoint (ADR 0037).
+fn is_substrate_register(req: &Request<Body>) -> bool {
+    let path = req.uri().path();
+    req.method() == axum::http::Method::POST
+        && path.starts_with("/_matrix/client/")
+        && path.ends_with("/register")
 }
 
 /// Headers that must not be forwarded between two HTTP hops.

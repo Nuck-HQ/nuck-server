@@ -29,6 +29,9 @@ fn app(hs_token: Option<&str>, appservice_user: Option<&str>) -> Router {
         reconcile_interval_secs: 300,
         reconcile_on_startup: false,
         message_backfill_limit: None,
+        registration_mode: "token".to_owned(),
+        registration_token: None,
+        admin_users: Vec::new(),
     };
     let substrate = SubstrateClient::from_config(&config);
     api::router(Arc::new(AppState { config: Arc::new(config), projection: None, substrate }))

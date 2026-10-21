@@ -60,6 +60,14 @@ pub struct Config {
     /// Bound on messages fetched per channel during the startup backfill. `None`
     /// disables message backfill.
     pub message_backfill_limit: Option<i64>,
+
+    /// Registration policy (ADR 0037): `open`, `token`, `approval`, or `closed`.
+    pub registration_mode: String,
+    /// The shared token required in `token` mode.
+    pub registration_token: Option<String>,
+    /// Operator admins (user ids). Server admins gate the registration queue; they are
+    /// not a guild role (ADR 0037).
+    pub admin_users: Vec<String>,
 }
 
 impl Config {
@@ -91,6 +99,16 @@ impl Config {
                 Some(raw) => Some(raw.parse().context("NUCK_MESSAGE_BACKFILL_LIMIT must be an integer or `none`")?),
                 None => Some(DEFAULT_MESSAGE_BACKFILL_LIMIT),
             },
+            registration_mode: env_or("NUCK_REGISTRATION_MODE", "token"),
+            registration_token: env_opt("NUCK_REGISTRATION_TOKEN"),
+            admin_users: env_opt("NUCK_ADMIN_USERS")
+                .map(|raw| {
+                    raw.split(',')
+                        .map(|user| user.trim().to_owned())
+                        .filter(|user| !user.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 }
