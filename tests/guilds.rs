@@ -98,6 +98,10 @@ fn fake_router(fake: Fake) -> Router {
             "/_matrix/client/v3/rooms/{room_id}/state/{event_type}/{state_key}",
             put(fake_send_state),
         )
+        .route(
+            "/_matrix/client/v3/rooms/{room_id}/state/{event_type}",
+            put(fake_send_state_singleton),
+        )
         .route("/_matrix/client/v3/rooms/{room_id}/{action}", post(fake_membership))
         .with_state(fake)
 }
@@ -125,6 +129,25 @@ async fn fake_send_state(
         room_id,
         event_type,
         state_key,
+        user_id,
+        content,
+    });
+    let id = fake.next_event.fetch_add(1, Ordering::SeqCst);
+    Json(json!({ "event_id": format!("$bot{id}") }))
+}
+
+/// A singleton state event (empty state key) has no trailing path segment.
+async fn fake_send_state_singleton(
+    State(fake): State<Fake>,
+    Path((room_id, event_type)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+    Json(content): Json<Value>,
+) -> Json<Value> {
+    let user_id = query.get("user_id").cloned().unwrap_or_default();
+    fake.writes.lock().unwrap().push(Recorded::State {
+        room_id,
+        event_type,
+        state_key: String::new(),
         user_id,
         content,
     });
@@ -243,6 +266,7 @@ async fn seed_guild(p: &Projection, guild_id: &str, home_server: &str) {
         name: Some("Guild".to_owned()),
         join_mode: Some("invite_only".to_owned()),
         directory_visibility: Some("hidden".to_owned()),
+        default_notification_level: Some("mentions_only".to_owned()),
         event_id: format!("$guild{guild_id}"),
     })
     .await
@@ -1318,4 +1342,281 @@ async fn me_returns_profile_and_settings() {
     assert_eq!(body["display_name"], "Display Name");
     assert_eq!(body["avatar_url"], "mxc://example.org/av");
     assert_eq!(body["settings"]["theme"], "dark");
+}
+
+// --- Guild/channel/role/member mutations -----------------------------------
+
+#[tokio::test]
+async fn update_guild_merges_settings() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "PATCH",
+            &format!("/_nuck/v1/guilds/{GUILD}"),
+            Some(USER_TOKEN),
+            Some(json!({ "name": "Renamed", "join_mode": "open" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let writes = h.fake.writes();
+    assert!(
+        writes.iter().any(|w| matches!(w, Recorded::State { event_type, content, .. }
+            if event_type == "m.room.name" && content["name"] == "Renamed")),
+        "the name is written as m.room.name"
+    );
+    let settings = writes
+        .iter()
+        .find_map(|w| match w {
+            Recorded::State { event_type, content, .. } if event_type == "space.nuck.guild.v1" => {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .expect("a guild settings write");
+    assert_eq!(settings["join_mode"], "open");
+    assert_eq!(settings["directory_visibility"], "hidden", "unchanged field is preserved");
+    assert_eq!(settings["default_notification_level"], "mentions_only");
+}
+
+#[tokio::test]
+async fn delete_guild_is_owner_only() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await; // ACTOR owns the guild
+    seed_member(&h.projection, GUILD, OTHER, &["admin"]).await; // admin, but not owner
+
+    let refused = h
+        .app
+        .clone()
+        .oneshot(request("DELETE", &format!("/_nuck/v1/guilds/{GUILD}"), Some(OTHER_TOKEN), None))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+    let ok = h
+        .app
+        .clone()
+        .oneshot(request("DELETE", &format!("/_nuck/v1/guilds/{GUILD}"), Some(USER_TOKEN), None))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+    assert!(
+        h.fake.writes().iter().any(|w| matches!(w, Recorded::State { event_type, content, .. }
+            if event_type == "space.nuck.guild.v1"
+                && content.as_object().is_some_and(|o| o.is_empty()))),
+        "deletion writes empty guild content"
+    );
+}
+
+#[tokio::test]
+async fn update_role_preserves_unset_fields() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "PATCH",
+            &format!("/_nuck/v1/guilds/{GUILD}/roles/admin"),
+            Some(USER_TOKEN),
+            Some(json!({ "name": "Admin Two" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let role = h
+        .fake
+        .writes()
+        .into_iter()
+        .find_map(|w| match w {
+            Recorded::State { event_type, state_key, content, .. }
+                if event_type == "space.nuck.role.v1" && state_key == "admin" =>
+            {
+                Some(content)
+            }
+            _ => None,
+        })
+        .expect("a role write");
+    assert_eq!(role["name"], "Admin Two");
+    assert_eq!(role["position"], 100, "position preserved");
+    assert_ne!(role["permissions"].as_u64().unwrap(), 0, "permissions preserved");
+}
+
+#[tokio::test]
+async fn delete_role_rejects_everyone_and_clears_others() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+
+    let everyone = h
+        .app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("/_nuck/v1/guilds/{GUILD}/roles/everyone"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(everyone.status(), StatusCode::BAD_REQUEST);
+
+    let ok = h
+        .app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("/_nuck/v1/guilds/{GUILD}/roles/admin"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+    assert!(
+        h.fake.writes().iter().any(|w| matches!(w, Recorded::State { event_type, state_key, content, .. }
+            if event_type == "space.nuck.role.v1"
+                && state_key == "admin"
+                && content.as_object().is_some_and(|o| o.is_empty()))),
+        "a deleted role is written with empty content"
+    );
+}
+
+#[tokio::test]
+async fn update_channel_renames_and_repositions() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+    seed_channel(&h.projection, CHANNEL, GUILD).await;
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "PATCH",
+            &format!("/_nuck/v1/channels/{CHANNEL}"),
+            Some(USER_TOKEN),
+            Some(json!({ "name": "renamed", "position": 5 })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let writes = h.fake.writes();
+    assert!(writes.iter().any(|w| matches!(w, Recorded::State { room_id, event_type, content, .. }
+        if room_id == CHANNEL && event_type == "m.room.name" && content["name"] == "renamed")));
+    let channel = writes
+        .iter()
+        .find_map(|w| match w {
+            Recorded::State { room_id, event_type, state_key, content, .. }
+                if room_id == GUILD
+                    && event_type == "space.nuck.channel.v1"
+                    && state_key == CHANNEL =>
+            {
+                Some(content.clone())
+            }
+            _ => None,
+        })
+        .expect("a channel state write");
+    assert_eq!(channel["position"], 5);
+    assert_eq!(channel["kind"], "text", "kind preserved");
+}
+
+#[tokio::test]
+async fn delete_channel_empties_state_and_removes_child() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+    seed_channel(&h.projection, CHANNEL, GUILD).await;
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("/_nuck/v1/channels/{CHANNEL}"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let writes = h.fake.writes();
+    assert!(writes.iter().any(|w| matches!(w, Recorded::State { event_type, state_key, content, .. }
+        if event_type == "space.nuck.channel.v1"
+            && state_key == CHANNEL
+            && content.as_object().is_some_and(|o| o.is_empty()))));
+    assert!(writes.iter().any(|w| matches!(w, Recorded::State { event_type, state_key, .. }
+        if event_type == "m.space.child" && state_key == CHANNEL)));
+}
+
+#[tokio::test]
+async fn kick_member_kicks_and_clears_roles() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+    seed_member(&h.projection, GUILD, OTHER, &[]).await;
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("/_nuck/v1/guilds/{GUILD}/members/{OTHER}"),
+            Some(USER_TOKEN),
+            Some(json!({ "reason": "spam" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let writes = h.fake.writes();
+    assert!(writes.iter().any(|w| matches!(w, Recorded::Membership { kind, target, reason, .. }
+        if kind == "kick" && target == OTHER && reason.as_deref() == Some("spam"))));
+    assert!(writes.iter().any(|w| matches!(w, Recorded::State { event_type, state_key, content, .. }
+        if event_type == "space.nuck.member.v1"
+            && state_key == OTHER
+            && content.as_object().is_some_and(|o| o.is_empty()))));
+}
+
+#[tokio::test]
+async fn unban_member_unbans_and_clears_the_ban() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+    h.projection
+        .upsert_ban(&BanRow {
+            guild_id: GUILD.to_owned(),
+            user_id: OTHER.to_owned(),
+            reason: None,
+            banned_by: Some(ACTOR.to_owned()),
+            created_at: Some(1),
+            event_id: "$ban1".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("/_nuck/v1/guilds/{GUILD}/bans/{OTHER}"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let writes = h.fake.writes();
+    assert!(writes.iter().any(|w| matches!(w, Recorded::Membership { kind, target, .. }
+        if kind == "unban" && target == OTHER)));
+    assert!(writes.iter().any(|w| matches!(w, Recorded::State { event_type, state_key, content, .. }
+        if event_type == "space.nuck.ban.v1"
+            && state_key == OTHER
+            && content.as_object().is_some_and(|o| o.is_empty()))));
 }

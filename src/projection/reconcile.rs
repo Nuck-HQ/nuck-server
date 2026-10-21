@@ -247,9 +247,10 @@ mod tests {
             event("m.room.member", Some("@u:example.org"), "$member"),
         ];
         let (ops, ids, is_guild) = state_ops(&state);
-        // The guild event has empty content, which is malformed for the settings type.
-        // The member event is not projected. So no ops, but both ids are recorded.
-        assert!(ops.is_empty());
+        // The guild event has empty content, which now encodes removal (there is no
+        // state deletion); the member event is not projected. Both ids are recorded.
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0], ProjectionOp::RemoveGuild(ref id) if id == "!guild:example.org"));
         assert_eq!(ids, vec!["$guild".to_owned(), "$member".to_owned()]);
         assert!(is_guild, "the guild event marks the room as a guild");
     }

@@ -221,6 +221,7 @@ mod tests {
                 name: None,
                 join_mode: None,
                 directory_visibility: None,
+                default_notification_level: None,
                 event_id: "$g".to_owned(),
             },
             permissions,

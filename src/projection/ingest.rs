@@ -37,49 +37,72 @@ pub struct Transaction {
 pub fn project(event: &RawEvent) -> Result<Option<ProjectionOp>> {
     let op = match event.event_type.as_str() {
         et::GUILD => {
-            let c: GuildSettingsEventContent = content(event)?;
-            ProjectionOp::Guild(GuildRow {
-                guild_id: event.room_id.clone(),
-                home_server: server_of(&event.room_id),
-                name: None,
-                join_mode: Some(enum_str(&c.join_mode)),
-                directory_visibility: Some(enum_str(&c.directory_visibility)),
-                event_id: event.event_id.clone(),
-            })
+            if is_removal(event) {
+                ProjectionOp::RemoveGuild(event.room_id.clone())
+            } else {
+                let c: GuildSettingsEventContent = content(event)?;
+                ProjectionOp::Guild(GuildRow {
+                    guild_id: event.room_id.clone(),
+                    home_server: server_of(&event.room_id),
+                    name: None,
+                    join_mode: Some(enum_str(&c.join_mode)),
+                    directory_visibility: Some(enum_str(&c.directory_visibility)),
+                    default_notification_level: Some(enum_str(&c.default_notification_level)),
+                    event_id: event.event_id.clone(),
+                })
+            }
         }
         et::ROLE => {
-            let c: RoleEventContent = content(event)?;
-            ProjectionOp::Role(RoleRow {
-                guild_id: event.room_id.clone(),
-                role_id: event.state_key().to_owned(),
-                position: c.position,
-                permissions: c.permissions.bits() as i64,
-                name: Some(c.name),
-                color: c.color.map(i64::from),
-                hoist: c.hoist,
-                mentionable: c.mentionable,
-                event_id: event.event_id.clone(),
-            })
+            if is_removal(event) {
+                ProjectionOp::RemoveRole {
+                    guild_id: event.room_id.clone(),
+                    role_id: event.state_key().to_owned(),
+                }
+            } else {
+                let c: RoleEventContent = content(event)?;
+                ProjectionOp::Role(RoleRow {
+                    guild_id: event.room_id.clone(),
+                    role_id: event.state_key().to_owned(),
+                    position: c.position,
+                    permissions: c.permissions.bits() as i64,
+                    name: Some(c.name),
+                    color: c.color.map(i64::from),
+                    hoist: c.hoist,
+                    mentionable: c.mentionable,
+                    event_id: event.event_id.clone(),
+                })
+            }
         }
         et::MEMBER => {
-            let c: MemberEventContent = content(event)?;
-            ProjectionOp::Member(MemberRow {
-                guild_id: event.room_id.clone(),
-                user_id: event.state_key().to_owned(),
-                roles: c.roles,
-                event_id: event.event_id.clone(),
-            })
+            if is_removal(event) {
+                ProjectionOp::RemoveMember {
+                    guild_id: event.room_id.clone(),
+                    user_id: event.state_key().to_owned(),
+                }
+            } else {
+                let c: MemberEventContent = content(event)?;
+                ProjectionOp::Member(MemberRow {
+                    guild_id: event.room_id.clone(),
+                    user_id: event.state_key().to_owned(),
+                    roles: c.roles,
+                    event_id: event.event_id.clone(),
+                })
+            }
         }
         et::CHANNEL => {
-            let c: ChannelEventContent = content(event)?;
-            ProjectionOp::Channel(ChannelRow {
-                channel_id: event.state_key().to_owned(),
-                guild_id: event.room_id.clone(),
-                kind: enum_str(&c.kind),
-                position: c.position,
-                category: c.category,
-                event_id: event.event_id.clone(),
-            })
+            if is_removal(event) {
+                ProjectionOp::RemoveChannel { channel_id: event.state_key().to_owned() }
+            } else {
+                let c: ChannelEventContent = content(event)?;
+                ProjectionOp::Channel(ChannelRow {
+                    channel_id: event.state_key().to_owned(),
+                    guild_id: event.room_id.clone(),
+                    kind: enum_str(&c.kind),
+                    position: c.position,
+                    category: c.category,
+                    event_id: event.event_id.clone(),
+                })
+            }
         }
         et::OVERRIDE => {
             let c: OverrideEventContent = content(event)?;
@@ -92,15 +115,22 @@ pub fn project(event: &RawEvent) -> Result<Option<ProjectionOp>> {
             })
         }
         et::BAN => {
-            let c: BanEventContent = content(event)?;
-            ProjectionOp::Ban(BanRow {
-                guild_id: event.room_id.clone(),
-                user_id: event.state_key().to_owned(),
-                reason: c.reason,
-                banned_by: Some(c.banned_by.to_string()),
-                created_at: Some(c.created_at as i64),
-                event_id: event.event_id.clone(),
-            })
+            if is_removal(event) {
+                ProjectionOp::RemoveBan {
+                    guild_id: event.room_id.clone(),
+                    user_id: event.state_key().to_owned(),
+                }
+            } else {
+                let c: BanEventContent = content(event)?;
+                ProjectionOp::Ban(BanRow {
+                    guild_id: event.room_id.clone(),
+                    user_id: event.state_key().to_owned(),
+                    reason: c.reason,
+                    banned_by: Some(c.banned_by.to_string()),
+                    created_at: Some(c.created_at as i64),
+                    event_id: event.event_id.clone(),
+                })
+            }
         }
         et::INVITE => {
             let c: InviteEventContent = content(event)?;
@@ -166,6 +196,15 @@ pub fn project(event: &RawEvent) -> Result<Option<ProjectionOp>> {
 fn content<T: serde::de::DeserializeOwned>(event: &RawEvent) -> Result<T> {
     serde_json::from_value(event.content.clone())
         .with_context(|| format!("malformed content for {}", event.event_type))
+}
+
+/// Whether a state event signals removal: an **empty content object**.
+///
+/// Matrix has no state deletion, so Nuck encodes removal as empty content — the shape a
+/// redaction produces, and the same convention `m.room.member` already relies on. A
+/// non-empty but malformed content is still an error (ADR 0014).
+fn is_removal(event: &RawEvent) -> bool {
+    event.content.as_object().is_some_and(|content| content.is_empty())
 }
 
 fn enum_str<T: Serialize>(value: &T) -> String {
@@ -345,5 +384,30 @@ mod tests {
     fn malformed_known_event_is_an_error() {
         let e = event(et::ROLE, Some("mod"), json!({ "name": "Mod" })); // missing required fields
         assert!(project(&e).is_err());
+    }
+
+    #[test]
+    fn empty_content_encodes_removal() {
+        // Matrix has no state deletion, so empty content removes (like a redaction).
+        assert!(matches!(
+            project(&event(et::ROLE, Some("mod"), json!({}))).unwrap().unwrap(),
+            ProjectionOp::RemoveRole { .. }
+        ));
+        assert!(matches!(
+            project(&event(et::CHANNEL, Some("!c:example.org"), json!({}))).unwrap().unwrap(),
+            ProjectionOp::RemoveChannel { .. }
+        ));
+        assert!(matches!(
+            project(&event(et::MEMBER, Some("@u:example.org"), json!({}))).unwrap().unwrap(),
+            ProjectionOp::RemoveMember { .. }
+        ));
+        assert!(matches!(
+            project(&event(et::BAN, Some("@u:example.org"), json!({}))).unwrap().unwrap(),
+            ProjectionOp::RemoveBan { .. }
+        ));
+        assert!(matches!(
+            project(&event(et::GUILD, Some(""), json!({}))).unwrap().unwrap(),
+            ProjectionOp::RemoveGuild(_)
+        ));
     }
 }

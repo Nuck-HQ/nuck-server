@@ -20,7 +20,7 @@ pub mod server_info;
 
 use std::sync::Arc;
 
-use axum::routing::{any, get, post, put};
+use axum::routing::{any, delete, get, patch, post, put};
 use axum::Router;
 use tower_http::trace::TraceLayer;
 
@@ -43,16 +43,36 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(guilds::create_role).get(guilds::list_roles),
         )
         .route(
+            "/_nuck/v1/guilds/{guild_id}/roles/{role_id}",
+            patch(guilds::update_role).delete(guilds::delete_role),
+        )
+        .route(
             "/_nuck/v1/guilds/{guild_id}/members/{user_id}/roles",
             put(guilds::set_member_roles),
         )
-        .route("/_nuck/v1/guilds/{guild_id}/bans/{user_id}", put(guilds::ban_member))
+        .route(
+            "/_nuck/v1/guilds/{guild_id}/members/{user_id}",
+            delete(guilds::kick_member),
+        )
+        .route(
+            "/_nuck/v1/guilds/{guild_id}/bans/{user_id}",
+            put(guilds::ban_member).delete(guilds::unban_member),
+        )
         // Guild & channel provisioning (MVP M3) and listing.
         .route("/_nuck/v1/guilds", post(guilds::create_guild).get(guilds::list_guilds))
-        .route("/_nuck/v1/guilds/{guild_id}", get(guilds::get_guild))
+        .route(
+            "/_nuck/v1/guilds/{guild_id}",
+            get(guilds::get_guild)
+                .patch(guilds::update_guild)
+                .delete(guilds::delete_guild),
+        )
         .route(
             "/_nuck/v1/guilds/{guild_id}/channels",
             post(guilds::create_channel).get(guilds::list_channels),
+        )
+        .route(
+            "/_nuck/v1/channels/{channel_id}",
+            patch(guilds::update_channel).delete(guilds::delete_channel),
         )
         .route(
             "/_nuck/v1/channels/{channel_id}/overrides",

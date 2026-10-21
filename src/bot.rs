@@ -54,4 +54,18 @@ impl<'a> ActionBot<'a> {
             .set_membership(self.token, Some(self.user), room_id, "ban", target, reason)
             .await
     }
+
+    /// Kick a user from a guild room (rejoinable).
+    pub async fn kick(&self, room_id: &str, target: &str, reason: Option<&str>) -> Result<()> {
+        self.substrate
+            .set_membership(self.token, Some(self.user), room_id, "kick", target, reason)
+            .await
+    }
+
+    /// Unban a user from a guild room.
+    pub async fn unban(&self, room_id: &str, target: &str) -> Result<()> {
+        self.substrate
+            .set_membership(self.token, Some(self.user), room_id, "unban", target, None)
+            .await
+    }
 }

@@ -13,6 +13,7 @@ pub struct GuildRow {
     pub name: Option<String>,
     pub join_mode: Option<String>,
     pub directory_visibility: Option<String>,
+    pub default_notification_level: Option<String>,
     pub event_id: String,
 }
 

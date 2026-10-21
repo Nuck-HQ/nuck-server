@@ -20,7 +20,7 @@ use nuck_server::permissions::Permissions;
 use nuck_server::projection::reconcile::{Reconciler, state_ops};
 use nuck_server::projection::{
     AuditEntry, ChannelRow, GuildOwnerRow, GuildRow, MemberRow, MembershipRow, MessageRow,
-    OverrideRow, Projection, RoleRow,
+    OverrideRow, Projection, ProjectionOp, RoleRow,
 };
 use nuck_server::state::AppState;
 use serde_json::json;
@@ -172,6 +172,7 @@ fn guild_row() -> GuildRow {
         name: Some("Test Guild".to_owned()),
         join_mode: Some("invite_only".to_owned()),
         directory_visibility: Some("hidden".to_owned()),
+        default_notification_level: Some("mentions_only".to_owned()),
         event_id: "$guild".to_owned(),
     }
 }
@@ -715,4 +716,62 @@ async fn reconciliation_survives_a_substrate_outage() {
 
     assert_eq!(report.rooms, 0);
     assert!(report.failures >= 1, "the unreachable guild is counted, then logged");
+}
+
+#[tokio::test]
+async fn removing_a_channel_deletes_it_and_its_overrides() {
+    let Some((p, _guard)) = setup().await else { return };
+    p.upsert_guild(&guild_row()).await.unwrap();
+    let channel = "!chan:example.org";
+    p.upsert_channel(&ChannelRow {
+        channel_id: channel.to_owned(),
+        guild_id: GUILD.to_owned(),
+        kind: "text".to_owned(),
+        position: 0,
+        category: None,
+        event_id: "$chan".to_owned(),
+    })
+    .await
+    .unwrap();
+    p.upsert_override(&OverrideRow {
+        channel_id: channel.to_owned(),
+        target: "everyone".to_owned(),
+        allow: 0,
+        deny: 0,
+        event_id: "$ov".to_owned(),
+    })
+    .await
+    .unwrap();
+    assert!(p.get_channel(channel).await.unwrap().is_some());
+
+    p.apply(ProjectionOp::RemoveChannel { channel_id: channel.to_owned() })
+        .await
+        .unwrap();
+    assert!(p.get_channel(channel).await.unwrap().is_none(), "channel removed");
+    assert!(p.list_overrides(channel).await.unwrap().is_empty(), "overrides removed");
+}
+
+#[tokio::test]
+async fn removing_a_role_deletes_overrides_that_targeted_it() {
+    let Some((p, _guard)) = setup().await else { return };
+    p.upsert_guild(&guild_row()).await.unwrap();
+    p.upsert_role(&role("$r1", "mod", 10, Permissions::NONE)).await.unwrap();
+    p.upsert_override(&OverrideRow {
+        channel_id: "!chan:example.org".to_owned(),
+        target: "mod".to_owned(),
+        allow: 0,
+        deny: 0,
+        event_id: "$ov".to_owned(),
+    })
+    .await
+    .unwrap();
+
+    p.apply(ProjectionOp::RemoveRole { guild_id: GUILD.to_owned(), role_id: "mod".to_owned() })
+        .await
+        .unwrap();
+    assert!(p.list_roles(GUILD).await.unwrap().is_empty(), "role removed");
+    assert!(
+        p.list_overrides("!chan:example.org").await.unwrap().is_empty(),
+        "its override was removed"
+    );
 }

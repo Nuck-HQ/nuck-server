@@ -29,6 +29,12 @@ pub use ingest::{RawEvent, Transaction};
 pub use models::*;
 
 /// A single projection operation produced from a federated event (ADR 0019).
+///
+/// The `Remove*` variants encode **deletion**. Matrix has no state deletion, so a
+/// removed entity is written as a state event with **empty content** — the same shape a
+/// redaction produces, and the same convention `m.room.member` already uses (a redacted
+/// member event is ignored, not rejected). This keeps the store rebuildable: current
+/// state carries the empty event, and replaying it re-applies the removal.
 #[derive(Debug, Clone)]
 pub enum ProjectionOp {
     Guild(GuildRow),
@@ -41,6 +47,11 @@ pub enum ProjectionOp {
     Ban(BanRow),
     Invite(InviteRow),
     Message(MessageRow),
+    RemoveGuild(String),
+    RemoveRole { guild_id: String, role_id: String },
+    RemoveMember { guild_id: String, user_id: String },
+    RemoveChannel { channel_id: String },
+    RemoveBan { guild_id: String, user_id: String },
 }
 
 /// The projection: an idempotent, rebuildable index over federated state (ADR 0019).
@@ -75,6 +86,17 @@ impl Projection {
             ProjectionOp::Ban(r) => self.upsert_ban(&r).await,
             ProjectionOp::Invite(r) => self.upsert_invite(&r).await,
             ProjectionOp::Message(r) => self.upsert_message(&r).await,
+            ProjectionOp::RemoveGuild(guild_id) => self.delete_guild(&guild_id).await,
+            ProjectionOp::RemoveRole { guild_id, role_id } => {
+                self.delete_role(&guild_id, &role_id).await
+            }
+            ProjectionOp::RemoveMember { guild_id, user_id } => {
+                self.delete_member(&guild_id, &user_id).await
+            }
+            ProjectionOp::RemoveChannel { channel_id } => self.delete_channel(&channel_id).await,
+            ProjectionOp::RemoveBan { guild_id, user_id } => {
+                self.delete_ban(&guild_id, &user_id).await
+            }
         }
     }
 
@@ -98,13 +120,15 @@ impl Projection {
     pub async fn upsert_guild(&self, g: &GuildRow) -> Result<()> {
         sqlx::query(
             "INSERT INTO guilds
-                (guild_id, home_server, name, join_mode, directory_visibility, event_id, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, now())
+                (guild_id, home_server, name, join_mode, directory_visibility,
+                 default_notification_level, event_id, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, now())
              ON CONFLICT (guild_id) DO UPDATE SET
                 home_server = EXCLUDED.home_server,
                 name = EXCLUDED.name,
                 join_mode = EXCLUDED.join_mode,
                 directory_visibility = EXCLUDED.directory_visibility,
+                default_notification_level = EXCLUDED.default_notification_level,
                 event_id = EXCLUDED.event_id,
                 updated_at = now()",
         )
@@ -113,6 +137,7 @@ impl Projection {
         .bind(&g.name)
         .bind(&g.join_mode)
         .bind(&g.directory_visibility)
+        .bind(&g.default_notification_level)
         .bind(&g.event_id)
         .execute(&self.pool)
         .await?;
@@ -177,11 +202,61 @@ impl Projection {
         Ok(())
     }
 
-    /// Delete a role (and its overrides) — e.g. on role removal.
+    /// Delete a role, and any override that targeted it (ADR 0020).
     pub async fn delete_role(&self, guild_id: &str, role_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM roles WHERE guild_id = $1 AND role_id = $2")
             .bind(guild_id)
             .bind(role_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM overrides WHERE target = $1")
+            .bind(role_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete a guild and its owner record (a removed guild).
+    pub async fn delete_guild(&self, guild_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM guilds WHERE guild_id = $1")
+            .bind(guild_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM guild_owners WHERE guild_id = $1")
+            .bind(guild_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete a member's role assignments (e.g. on kick or leave).
+    pub async fn delete_member(&self, guild_id: &str, user_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM members WHERE guild_id = $1 AND user_id = $2")
+            .bind(guild_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete a channel and its overrides.
+    pub async fn delete_channel(&self, channel_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM channels WHERE channel_id = $1")
+            .bind(channel_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM overrides WHERE channel_id = $1")
+            .bind(channel_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete a ban (unban).
+    pub async fn delete_ban(&self, guild_id: &str, user_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM bans WHERE guild_id = $1 AND user_id = $2")
+            .bind(guild_id)
+            .bind(user_id)
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -469,7 +544,8 @@ impl Projection {
     /// Read one guild, if the projection knows it.
     pub async fn get_guild(&self, guild_id: &str) -> Result<Option<GuildRow>> {
         let row = sqlx::query_as::<_, GuildRow>(
-            "SELECT guild_id, home_server, name, join_mode, directory_visibility, event_id
+            "SELECT guild_id, home_server, name, join_mode, directory_visibility,
+                    default_notification_level, event_id
              FROM guilds WHERE guild_id = $1",
         )
         .bind(guild_id)

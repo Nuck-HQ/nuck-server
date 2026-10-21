@@ -17,8 +17,9 @@ use axum::Json;
 use nuck_protocol::api::{
     ActionResponse, AuditEntry, AuditLogResponse, BanInfo, BanRequest, BansResponse, ChannelInfo,
     ChannelsResponse, CreateChannelRequest, CreateGuildRequest, CreateRoleRequest,
-    CreateRoleResponse, GuildResponse, GuildSummary, GuildView, GuildsResponse, MemberInfo,
-    MembersResponse, RoleInfo, RolesResponse, SetMemberRolesRequest,
+    CreateRoleResponse, GuildResponse, GuildSummary, GuildView, GuildsResponse, KickRequest,
+    MemberInfo, MembersResponse, RoleInfo, RolesResponse, SetMemberRolesRequest,
+    UpdateChannelRequest, UpdateGuildRequest, UpdateRoleRequest,
 };
 use nuck_protocol::authorization::EVERYONE_ROLE_ID;
 use nuck_protocol::events::{ChannelKind, event_types as et};
@@ -499,6 +500,361 @@ pub async fn list_audit_log(
     Ok(Json(AuditLogResponse { items, next_cursor }))
 }
 
+// --- Guild/channel/role/member mutations (ADR 0005/0006/0016) --------------
+
+/// `PATCH /_nuck/v1/guilds/{guildId}` — update guild settings (ADR 0005).
+pub async fn update_guild(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id: actor, .. }: AuthenticatedUser,
+    Path(guild_id): Path<String>,
+    Json(req): Json<UpdateGuildRequest>,
+) -> Result<Json<ActionResponse>, ApiErrorResponse> {
+    let access = privileged::load(&state, &guild_id, &actor).await?;
+    privileged::require_local(&state, &access)?;
+    privileged::require_member(&access)?;
+    privileged::require(&access, Permissions::MANAGE_GUILD, "MANAGE_GUILD")?;
+
+    let bot = privileged::action_bot(&state)?;
+    let mut event_id: Option<String> = None;
+
+    if let Some(name) = req.name {
+        let content = serde_json::json!({ "name": name });
+        event_id = Some(
+            bot.write_state(&guild_id, "m.room.name", "", content)
+                .await
+                .map_err(privileged::internal)?,
+        );
+    }
+    if let Some(topic) = req.topic {
+        let content = serde_json::json!({ "topic": topic });
+        event_id = Some(
+            bot.write_state(&guild_id, "m.room.topic", "", content)
+                .await
+                .map_err(privileged::internal)?,
+        );
+    }
+    if let Some(url) = req.icon_url {
+        let content = serde_json::json!({ "url": url });
+        event_id = Some(
+            bot.write_state(&guild_id, "m.room.avatar", "", content)
+                .await
+                .map_err(privileged::internal)?,
+        );
+    }
+    if req.join_mode.is_some() || req.directory_visibility.is_some() {
+        // The settings event carries all three fields, so merge with the projection.
+        let join_mode = req
+            .join_mode
+            .as_ref()
+            .map(json_str)
+            .or_else(|| access.guild.join_mode.clone())
+            .unwrap_or_else(|| "invite_only".to_owned());
+        let directory_visibility = req
+            .directory_visibility
+            .as_ref()
+            .map(json_str)
+            .or_else(|| access.guild.directory_visibility.clone())
+            .unwrap_or_else(|| "hidden".to_owned());
+        let notification = access
+            .guild
+            .default_notification_level
+            .clone()
+            .unwrap_or_else(|| "mentions_only".to_owned());
+        let content = serde_json::json!({
+            "join_mode": join_mode,
+            "directory_visibility": directory_visibility,
+            "default_notification_level": notification,
+        });
+        event_id = Some(
+            bot.write_state(&guild_id, et::GUILD, "", content)
+                .await
+                .map_err(privileged::internal)?,
+        );
+    }
+
+    let Some(event_id) = event_id else {
+        return Err(ApiErrorResponse::bad_request("no updatable fields were provided"));
+    };
+    privileged::record(&state, &guild_id, &actor, "guild.update", None, &event_id).await?;
+    Ok(Json(ActionResponse { event_id }))
+}
+
+/// `DELETE /_nuck/v1/guilds/{guildId}` — delete a guild (owner only, ADR 0038).
+pub async fn delete_guild(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id: actor, .. }: AuthenticatedUser,
+    Path(guild_id): Path<String>,
+) -> Result<Json<ActionResponse>, ApiErrorResponse> {
+    let access = privileged::load(&state, &guild_id, &actor).await?;
+    privileged::require_local(&state, &access)?;
+    privileged::require_member(&access)?;
+    if !access.is_owner() {
+        return Err(ApiErrorResponse::forbidden("only the guild owner can delete the guild"));
+    }
+
+    // Empty content encodes removal (there is no state deletion); the guild room itself
+    // is left in place by the substrate.
+    let bot = privileged::action_bot(&state)?;
+    let event_id = bot
+        .write_state(&guild_id, et::GUILD, "", serde_json::json!({}))
+        .await
+        .map_err(privileged::internal)?;
+    privileged::record(&state, &guild_id, &actor, "guild.delete", None, &event_id).await?;
+    Ok(Json(ActionResponse { event_id }))
+}
+
+/// `PATCH /_nuck/v1/guilds/{guildId}/roles/{roleId}` — update a role (ADR 0020).
+pub async fn update_role(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id: actor, .. }: AuthenticatedUser,
+    Path((guild_id, role_id)): Path<(String, String)>,
+    Json(req): Json<UpdateRoleRequest>,
+) -> Result<Json<ActionResponse>, ApiErrorResponse> {
+    let access = privileged::load(&state, &guild_id, &actor).await?;
+    privileged::require_local(&state, &access)?;
+    privileged::require_member(&access)?;
+    privileged::require(&access, Permissions::MANAGE_ROLES, "MANAGE_ROLES")?;
+
+    let current = privileged::projection(&state)?
+        .list_roles(&guild_id)
+        .await
+        .map_err(privileged::internal)?
+        .into_iter()
+        .find(|role| role.role_id == role_id)
+        .ok_or_else(|| ApiErrorResponse::not_found("unknown role"))?;
+
+    if role_id != EVERYONE_ROLE_ID && !access.outranks_position(current.position) {
+        return Err(ApiErrorResponse::forbidden(
+            "cannot edit a role at or above your highest role",
+        ));
+    }
+    let new_position = req.position.unwrap_or(current.position);
+    if !access.outranks_position(new_position) {
+        return Err(ApiErrorResponse::forbidden(
+            "cannot move a role at or above your highest role",
+        ));
+    }
+    let permissions = req.permissions.unwrap_or_else(|| current.perms());
+    if !access.can_grant(permissions) {
+        return Err(ApiErrorResponse::forbidden(
+            "you cannot grant a permission you do not have",
+        ));
+    }
+
+    let name = req.name.or(current.name).unwrap_or_else(|| role_id.clone());
+    let color = req.color.or(current.color.map(|color| color as u32));
+    let hoist = req.hoist.unwrap_or(current.hoist);
+    let mentionable = req.mentionable.unwrap_or(current.mentionable);
+
+    let bot = privileged::action_bot(&state)?;
+    let content = serde_json::json!({
+        "name": name,
+        "color": color,
+        "position": new_position,
+        "permissions": permissions,
+        "hoist": hoist,
+        "mentionable": mentionable,
+    });
+    let event_id = bot
+        .write_state(&guild_id, et::ROLE, &role_id, content)
+        .await
+        .map_err(privileged::internal)?;
+    privileged::record(&state, &guild_id, &actor, "role.update", Some(&role_id), &event_id).await?;
+    Ok(Json(ActionResponse { event_id }))
+}
+
+/// `DELETE /_nuck/v1/guilds/{guildId}/roles/{roleId}` — delete a role (ADR 0020).
+pub async fn delete_role(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id: actor, .. }: AuthenticatedUser,
+    Path((guild_id, role_id)): Path<(String, String)>,
+) -> Result<Json<ActionResponse>, ApiErrorResponse> {
+    let access = privileged::load(&state, &guild_id, &actor).await?;
+    privileged::require_local(&state, &access)?;
+    privileged::require_member(&access)?;
+    privileged::require(&access, Permissions::MANAGE_ROLES, "MANAGE_ROLES")?;
+
+    if role_id == EVERYONE_ROLE_ID {
+        return Err(ApiErrorResponse::bad_request(
+            "the @everyone role cannot be deleted",
+        ));
+    }
+    let current = privileged::projection(&state)?
+        .list_roles(&guild_id)
+        .await
+        .map_err(privileged::internal)?
+        .into_iter()
+        .find(|role| role.role_id == role_id)
+        .ok_or_else(|| ApiErrorResponse::not_found("unknown role"))?;
+    if !access.outranks_position(current.position) {
+        return Err(ApiErrorResponse::forbidden(
+            "cannot delete a role at or above your highest role",
+        ));
+    }
+
+    let bot = privileged::action_bot(&state)?;
+    let event_id = bot
+        .write_state(&guild_id, et::ROLE, &role_id, serde_json::json!({}))
+        .await
+        .map_err(privileged::internal)?;
+    privileged::record(&state, &guild_id, &actor, "role.delete", Some(&role_id), &event_id).await?;
+    Ok(Json(ActionResponse { event_id }))
+}
+
+/// `DELETE /_nuck/v1/guilds/{guildId}/members/{userId}` — kick (ADR 0016).
+pub async fn kick_member(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id: actor, .. }: AuthenticatedUser,
+    Path((guild_id, user_id)): Path<(String, String)>,
+    Json(req): Json<KickRequest>,
+) -> Result<Json<ActionResponse>, ApiErrorResponse> {
+    let access = privileged::load(&state, &guild_id, &actor).await?;
+    privileged::require_local(&state, &access)?;
+    privileged::require_member(&access)?;
+    privileged::require(&access, Permissions::KICK_MEMBERS, "KICK_MEMBERS")?;
+
+    let target_roles = privileged::member_roles(&state, &guild_id, &user_id).await?;
+    if !access.outranks_member(&target_roles) {
+        return Err(ApiErrorResponse::forbidden("the target member is not below you"));
+    }
+
+    let bot = privileged::action_bot(&state)?;
+    bot.kick(&guild_id, &user_id, req.reason.as_deref())
+        .await
+        .map_err(privileged::internal)?;
+    // Clear the member's role assignments (ADR 0014: member state is cleaned on leave).
+    let event_id = bot
+        .write_state(&guild_id, et::MEMBER, &user_id, serde_json::json!({}))
+        .await
+        .map_err(privileged::internal)?;
+    privileged::record(&state, &guild_id, &actor, "kick", Some(&user_id), &event_id).await?;
+    Ok(Json(ActionResponse { event_id }))
+}
+
+/// `DELETE /_nuck/v1/guilds/{guildId}/bans/{userId}` — unban (ADR 0016).
+pub async fn unban_member(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id: actor, .. }: AuthenticatedUser,
+    Path((guild_id, user_id)): Path<(String, String)>,
+) -> Result<Json<ActionResponse>, ApiErrorResponse> {
+    let access = privileged::load(&state, &guild_id, &actor).await?;
+    privileged::require_local(&state, &access)?;
+    privileged::require_member(&access)?;
+    privileged::require(&access, Permissions::BAN_MEMBERS, "BAN_MEMBERS")?;
+
+    let bot = privileged::action_bot(&state)?;
+    bot.unban(&guild_id, &user_id).await.map_err(privileged::internal)?;
+    let event_id = bot
+        .write_state(&guild_id, et::BAN, &user_id, serde_json::json!({}))
+        .await
+        .map_err(privileged::internal)?;
+    privileged::record(&state, &guild_id, &actor, "unban", Some(&user_id), &event_id).await?;
+    Ok(Json(ActionResponse { event_id }))
+}
+
+/// `PATCH /_nuck/v1/channels/{channelId}` — update a channel (ADR 0005).
+pub async fn update_channel(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id: actor, .. }: AuthenticatedUser,
+    Path(channel_id): Path<String>,
+    Json(req): Json<UpdateChannelRequest>,
+) -> Result<Json<ActionResponse>, ApiErrorResponse> {
+    let channel = privileged::projection(&state)?
+        .get_channel(&channel_id)
+        .await
+        .map_err(privileged::internal)?
+        .ok_or_else(|| ApiErrorResponse::not_found("unknown channel"))?;
+    let guild_id = channel.guild_id.clone();
+
+    let access = privileged::load(&state, &guild_id, &actor).await?;
+    privileged::require_local(&state, &access)?;
+    privileged::require_member(&access)?;
+    privileged::require(&access, Permissions::MANAGE_CHANNELS, "MANAGE_CHANNELS")?;
+
+    let bot = privileged::action_bot(&state)?;
+    let mut event_id: Option<String> = None;
+
+    if let Some(name) = req.name {
+        let content = serde_json::json!({ "name": name });
+        event_id = Some(
+            bot.write_state(&channel_id, "m.room.name", "", content)
+                .await
+                .map_err(privileged::internal)?,
+        );
+    }
+    if let Some(topic) = req.topic {
+        let content = serde_json::json!({ "topic": topic });
+        event_id = Some(
+            bot.write_state(&channel_id, "m.room.topic", "", content)
+                .await
+                .map_err(privileged::internal)?,
+        );
+    }
+    if req.kind.is_some() || req.position.is_some() || req.category.is_some() {
+        let kind = req.kind.as_ref().map(json_str).unwrap_or_else(|| channel.kind.clone());
+        let position = req.position.unwrap_or(channel.position);
+        let category = req.category.or_else(|| channel.category.clone());
+        let content = serde_json::json!({
+            "kind": kind,
+            "position": position,
+            "category": category,
+        });
+        event_id = Some(
+            bot.write_state(&guild_id, et::CHANNEL, &channel_id, content)
+                .await
+                .map_err(privileged::internal)?,
+        );
+    }
+
+    let Some(event_id) = event_id else {
+        return Err(ApiErrorResponse::bad_request("no updatable fields were provided"));
+    };
+    privileged::record(&state, &guild_id, &actor, "channel.update", Some(&channel_id), &event_id)
+        .await?;
+    Ok(Json(ActionResponse { event_id }))
+}
+
+/// `DELETE /_nuck/v1/channels/{channelId}` — delete a channel (ADR 0005).
+pub async fn delete_channel(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id: actor, .. }: AuthenticatedUser,
+    Path(channel_id): Path<String>,
+) -> Result<Json<ActionResponse>, ApiErrorResponse> {
+    let channel = privileged::projection(&state)?
+        .get_channel(&channel_id)
+        .await
+        .map_err(privileged::internal)?
+        .ok_or_else(|| ApiErrorResponse::not_found("unknown channel"))?;
+    let guild_id = channel.guild_id.clone();
+
+    let access = privileged::load(&state, &guild_id, &actor).await?;
+    privileged::require_local(&state, &access)?;
+    privileged::require_member(&access)?;
+    privileged::require(&access, Permissions::MANAGE_CHANNELS, "MANAGE_CHANNELS")?;
+
+    let bot = privileged::action_bot(&state)?;
+    // Empty channel state removes it from the projection; an empty `m.space.child`
+    // removes it from the guild Space (Matrix's sanctioned removal for children).
+    let event_id = bot
+        .write_state(&guild_id, et::CHANNEL, &channel_id, serde_json::json!({}))
+        .await
+        .map_err(privileged::internal)?;
+    bot.write_state(&guild_id, "m.space.child", &channel_id, serde_json::json!({}))
+        .await
+        .map_err(privileged::internal)?;
+    privileged::record(&state, &guild_id, &actor, "channel.delete", Some(&channel_id), &event_id)
+        .await?;
+    Ok(Json(ActionResponse { event_id }))
+}
+
+/// Serialize an enum to its snake_case string form.
+fn json_str<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_default()
+}
+
 /// Project a channel row into the wire shape.
 fn channel_info(c: crate::projection::ChannelRow) -> ChannelInfo {
     ChannelInfo {
@@ -552,7 +908,7 @@ pub async fn create_channel(
     wait_for_channel(privileged::projection(&state)?, &channel_id).await;
     Ok(Json(ChannelInfo {
         channel_id,
-        kind: kind_str(req.kind),
+        kind: json_str(&req.kind),
         position,
         category: req.category,
     }))
@@ -725,11 +1081,4 @@ async fn wait_for_channel(projection: &Projection, channel_id: &str) {
         }
     }
     tracing::warn!(channel = %channel_id, "projection did not converge before responding");
-}
-
-fn kind_str(kind: ChannelKind) -> String {
-    serde_json::to_value(kind)
-        .ok()
-        .and_then(|value| value.as_str().map(ToOwned::to_owned))
-        .unwrap_or_default()
 }
