@@ -6,14 +6,17 @@
 FROM rust:1.99-bookworm AS build
 WORKDIR /src
 
-# The workspace manifest and lockfile first, so dependency builds can be cached.
-# (No rust-toolchain.toml: the image's stable toolchain satisfies ruma's >= 1.89
-# requirement, and the official image no longer publishes a `nightly` tag.)
+# Manifests and lockfile first, then fetch, so dependency builds — including
+# nuck-protocol pulled from its pinned git tag — are cached across source changes.
+# rust-toolchain.toml is not copied: the image's own stable 1.99 toolchain is what
+# we build with.
 COPY Cargo.toml Cargo.lock ./
-COPY nuck-protocol ./nuck-protocol
-COPY nuck-server ./nuck-server
+RUN cargo fetch --locked
 
-RUN cargo build --release --locked -p nuck-server
+COPY src ./src
+COPY migrations ./migrations
+
+RUN cargo build --release --locked
 
 FROM debian:bookworm-slim
 RUN apt-get update \

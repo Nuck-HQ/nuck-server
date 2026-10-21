@@ -40,7 +40,7 @@ permissions and the mirrored `m.room.power_levels`).
 
 ## Outcome (2026-10-21)
 
-The property test was implemented (`nuck-protocol/tests/mirror_invariant.rs`) and it
+The property test was implemented ([nuck-protocol's `mirror_invariant` test](https://github.com/nuck-hq/nuck-protocol/blob/v0.1.0/tests/mirror_invariant.rs)) and it
 **found a real flaw**: a scalar power level cannot mirror an arbitrary permission set.
 The mirror never under-grants but over-grants for non-level-closed sets. See
 **ADR 0040** for the finding, the options, and the pending decision. The test suite

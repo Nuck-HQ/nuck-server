@@ -64,7 +64,7 @@ Use these for the startup/periodic reconciliation pass.
 
 Landed and verified:
 
-- **Schema** — `nuck-server/migrations/0001_init.sql` (guilds, roles, members,
+- **Schema** — `migrations/0001_init.sql` (guilds, roles, members,
   channels, overrides, bans, invites, audit_log, messages + `tsvector`, processed_events,
   projection_state).
 - **Write path** — `projection::Projection` with idempotent upserts and `apply(op)`;
@@ -90,7 +90,7 @@ auto-registered).
 
 The pipeline is now complete end-to-end.
 
-- **Reconciliation loop** — `nuck-server/src/projection/reconcile.rs`. On startup and
+- **Reconciliation loop** — `src/projection/reconcile.rs`. On startup and
   every `NUCK_RECONCILE_INTERVAL_SECS` it re-reads each guild room's resolved state
   (`GET /_synapse/admin/v1/rooms/{id}/state`, admin bypass), applies the resulting ops,
   and **prunes** rows whose writing event is no longer in current state
@@ -106,13 +106,13 @@ The pipeline is now complete end-to-end.
   events of each channel room (`GET .../rooms/{id}/messages`) into `messages`, bounded
   by `NUCK_MESSAGE_BACKFILL_LIMIT`. Current state is never reconstructed by replaying
   events; only append-only search is backfilled.
-- **AppService registration** — `nuck-server/src/matrix/registration.rs` generates the
+- **AppService registration** — `src/matrix/registration.rs` generates the
   projector's registration document (id, push URL, tokens, exclusive projector
   namespace) and writes it as YAML to `APPSERVICE_REGISTRATION_PATH`. Tuwunel loads
   `appservice_dir` files on startup; the same YAML applies live via
   `!admin appservices register`. There is no HTTP registration endpoint (verified in
   Tuwunel's `docs/appservices.md`).
-- **Substrate client** — `nuck-server/src/matrix/` speaks the admin API for real
+- **Substrate client** — `src/matrix/` speaks the admin API for real
   (room discovery, state, messages, join) with bounded timeouts, so a wedged substrate
   cannot stall the loop.
 

@@ -1,3 +1,2 @@
 [toolchain]
-# ruma 0.17 requires rust >= 1.89; the installed stable (1.87) is too old.
-channel = "nightly"
+channel = "1.99"

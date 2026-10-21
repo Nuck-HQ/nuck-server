@@ -1,38 +1,38 @@
-[workspace]
-resolver = "2"
-members = ["nuck-protocol", "nuck-server"]
-
-[workspace.package]
+[package]
+name = "nuck-server"
 version = "0.1.0"
 edition = "2021"
+description = "Nuck backend: a Rust BFF in front of an unmodified Tuwunel homeserver (ADRs 0003, 0004)"
 
-[workspace.lints.rust]
-# ruma's event derive emits `#[cfg(ruma_unstable_exhaustive_types)]`; declare it so
-# our crates don't warn about an unexpected cfg.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(ruma_unstable_exhaustive_types)"] }
+[lib]
+name = "nuck_server"
+path = "src/lib.rs"
 
-[workspace.dependencies]
-nuck-protocol = { path = "nuck-protocol" }
+[[bin]]
+name = "nuck-server"
+path = "src/main.rs"
+
+[dependencies]
+# The shared client/server contract (ADR 0027), now its own repository. Pinned to a
+# released protocol tag; bump deliberately with `cargo update -p nuck-protocol`
+# after tagging a new protocol release. Local co-development is handled by
+# `.cargo/config.toml` (`paths`), which is gitignored.
+nuck-protocol = { git = "https://github.com/nuck-hq/nuck-protocol.git", tag = "v0.1.0" }
+
+anyhow = "1"
+axum = "0.8"
+dotenvy = "0.15"
+
+# HTTP client for the Tuwunel substrate (ADR 0028): the AppService API, the
+# Synapse-compatible admin API for reconciliation, and C-S requests. Rustls so the
+# container image needs no system OpenSSL.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # Matrix protocol types (ADR 0004). `events` provides custom event content macros.
 ruma = { version = "0.17", features = ["events"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "2"
-anyhow = "1"
-
-tokio = { version = "1", features = ["full"] }
-axum = "0.8"
-tower-http = { version = "0.6", features = ["trace", "cors"] }
-
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-
-# HTTP client for the Tuwunel substrate (ADR 0028): the AppService API, the
-# Synapse-compatible admin API for reconciliation, and C-S requests. Rustls so the
-# container image needs no system OpenSSL.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 
 # Derived index store (ADR 0015). Postgres only, always.
 sqlx = { version = "0.9", default-features = false, features = [
@@ -45,5 +45,18 @@ sqlx = { version = "0.9", default-features = false, features = [
     "json",
 ] }
 
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-dotenvy = "0.15"
+
+[lints.rust]
+# ruma's event derive emits `#[cfg(ruma_unstable_exhaustive_types)]`; declare it so
+# our crate doesn't warn about an unexpected cfg.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(ruma_unstable_exhaustive_types)"] }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
