@@ -653,7 +653,7 @@ async fn assigning_roles_respects_the_hierarchy_on_both_ends() {
     match &writes[0] {
         Recorded::State { event_type, state_key, user_id, content, .. } => {
             assert_eq!(event_type, "space.nuck.member.v1");
-            assert_eq!(state_key, "@plain:example.org");
+            assert_eq!(state_key, "plain:example.org");
             assert_eq!(user_id, BOT);
             assert_eq!(content["roles"], json!(["low"]));
         }
@@ -685,7 +685,7 @@ async fn ban_writes_federated_state_and_membership() {
     match &writes[0] {
         Recorded::State { event_type, state_key, user_id, content, .. } => {
             assert_eq!(event_type, "space.nuck.ban.v1");
-            assert_eq!(state_key, "@spammer:example.org");
+            assert_eq!(state_key, "spammer:example.org");
             assert_eq!(user_id, BOT);
             assert_eq!(content["banned_by"], ACTOR, "attribution is carried in the event");
             assert_eq!(content["reason"], "spam");
@@ -1671,7 +1671,7 @@ async fn kick_member_kicks_and_clears_roles() {
         if kind == "kick" && target == OTHER && reason.as_deref() == Some("spam"))));
     assert!(writes.iter().any(|w| matches!(w, Recorded::State { event_type, state_key, content, .. }
         if event_type == "space.nuck.member.v1"
-            && state_key == OTHER
+            && state_key == "other:example.org"
             && content.as_object().is_some_and(|o| o.is_empty()))));
 }
 
@@ -1709,7 +1709,7 @@ async fn unban_member_unbans_and_clears_the_ban() {
         if kind == "unban" && target == OTHER)));
     assert!(writes.iter().any(|w| matches!(w, Recorded::State { event_type, state_key, content, .. }
         if event_type == "space.nuck.ban.v1"
-            && state_key == OTHER
+            && state_key == "other:example.org"
             && content.as_object().is_some_and(|o| o.is_empty()))));
 }
 
@@ -1894,7 +1894,7 @@ async fn join_request_is_written_pending_for_a_non_member() {
 
     assert!(h.fake.writes().iter().any(|w| matches!(w, Recorded::State { event_type, state_key, content, .. }
         if event_type == "space.nuck.join_request.v1"
-            && state_key == OTHER
+            && state_key == "other:example.org"
             && content["status"] == "pending")));
 }
 

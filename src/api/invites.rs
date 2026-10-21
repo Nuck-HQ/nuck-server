@@ -249,7 +249,7 @@ pub async fn create_join_request(
         "status": "pending",
         "requested_at": privileged::now_ms(),
     });
-    bot.write_state(&guild_id, et::JOIN_REQUEST, &user_id, content)
+    bot.write_state(&guild_id, et::JOIN_REQUEST, &crate::keys::encode_user_key(&user_id), content)
         .await
         .map_err(privileged::internal)?;
 
@@ -341,7 +341,7 @@ async fn decide_join_request(
         "requested_at": existing.requested_at,
     });
     let event_id = bot
-        .write_state(guild_id, et::JOIN_REQUEST, applicant, content)
+        .write_state(guild_id, et::JOIN_REQUEST, &crate::keys::encode_user_key(applicant), content)
         .await
         .map_err(privileged::internal)?;
     privileged::record(
@@ -356,21 +356,27 @@ async fn decide_join_request(
     Ok(event_id)
 }
 
-/// Force-join `user_id` into the guild and its channels via the admin API (ADR 0011).
+/// Add `user_id` to the guild and its channels (ADR 0011).
 ///
-/// Redemption and approval are host-authoritative, so the host adds the user directly
-/// rather than waiting for an invite accept. A user already in a room is a no-op.
+/// Redemption and approval are host-authoritative. The bot **invites** the user (it
+/// holds the `invite` power, ADR 0041), which needs no admin token; the client then
+/// accepts. Where an admin token is configured we additionally force-join, so the user
+/// is a member immediately. A user already in a room is a no-op.
 async fn force_join(
     state: &AppState,
     guild_id: &str,
     channels: &[String],
     user_id: &str,
 ) -> Result<(), ApiErrorResponse> {
+    let bot = privileged::action_bot(state)?;
     for room_id in std::iter::once(guild_id).chain(channels.iter().map(String::as_str)) {
-        if let Err(e) = state.substrate.join_user(room_id, user_id).await {
-            // Already joined is not a failure; a real error is logged but not fatal to
-            // the (already-written) invite record.
-            tracing::warn!(room = %room_id, user = %user_id, "force-join failed: {e}");
+        if let Err(e) = bot.invite(room_id, user_id).await {
+            tracing::warn!(room = %room_id, user = %user_id, "guild invite failed: {e}");
+        }
+        if state.substrate.admin_available() {
+            if let Err(e) = state.substrate.join_user(room_id, user_id).await {
+                tracing::warn!(room = %room_id, user = %user_id, "admin force-join failed: {e}");
+            }
         }
     }
     Ok(())

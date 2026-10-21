@@ -68,4 +68,11 @@ impl<'a> ActionBot<'a> {
             .set_membership(self.token, Some(self.user), room_id, "unban", target, None)
             .await
     }
+
+    /// Invite a user to a room as the action bot (it holds the `invite` power, ADR 0041).
+    pub async fn invite(&self, room_id: &str, target: &str) -> Result<()> {
+        self.substrate
+            .invite(self.token, Some(self.user), room_id, target)
+            .await
+    }
 }

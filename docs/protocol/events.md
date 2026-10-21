@@ -43,6 +43,12 @@ all-zero override (ADR 0020), which resolves identically to no override.
   with `@` as a user id). Every other role id is **opaque**: `r` + 12 lowercase hex
   characters, generated randomly. Opaque ids avoid leaking names or positions, stay
   stable across renames, and cannot be mistaken for a Matrix user id.
+- **User-keyed state keys are encoded** (ADR 0045): Tuwunel rejects a state event whose
+  `state_key` is another user's id, even from the action bot. So user ids used as state
+  keys — `member`, `ban`, `join_request`, and the user form of an `override` target —
+  **drop the leading `@`** (`@bob:server` → `bob:server`). Role ids and `everyone` are
+  unchanged. Decoding restores the real user id in the projection and every API response;
+  a raw-state reader (not the v1 client) must decode it.
 - **Role order** — carried by `position` (an `i64`) on the role event; higher wins on
   conflict. Ties are broken by role id, so every server computes the same order.
 - **Channel / emoji / sticker / invite keys** — see each type below.

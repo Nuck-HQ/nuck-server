@@ -24,6 +24,7 @@ pub mod config;
 pub mod db;
 pub mod federation;
 pub mod gateway;
+pub mod keys;
 pub mod matrix;
 pub mod permissions;
 pub mod projection;

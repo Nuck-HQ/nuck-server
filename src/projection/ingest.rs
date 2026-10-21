@@ -77,13 +77,13 @@ pub fn project(event: &RawEvent) -> Result<Option<ProjectionOp>> {
             if is_removal(event) {
                 ProjectionOp::RemoveMember {
                     guild_id: event.room_id.clone(),
-                    user_id: event.state_key().to_owned(),
+                    user_id: crate::keys::decode_user_key(event.state_key()),
                 }
             } else {
                 let c: MemberEventContent = content(event)?;
                 ProjectionOp::Member(MemberRow {
                     guild_id: event.room_id.clone(),
-                    user_id: event.state_key().to_owned(),
+                    user_id: crate::keys::decode_user_key(event.state_key()),
                     roles: c.roles,
                     event_id: event.event_id.clone(),
                 })
@@ -108,7 +108,7 @@ pub fn project(event: &RawEvent) -> Result<Option<ProjectionOp>> {
             let c: OverrideEventContent = content(event)?;
             ProjectionOp::Override(OverrideRow {
                 channel_id: event.room_id.clone(),
-                target: event.state_key().to_owned(),
+                target: crate::keys::decode_override_target(event.state_key()),
                 allow: c.allow.bits() as i64,
                 deny: c.deny.bits() as i64,
                 event_id: event.event_id.clone(),
@@ -118,13 +118,13 @@ pub fn project(event: &RawEvent) -> Result<Option<ProjectionOp>> {
             if is_removal(event) {
                 ProjectionOp::RemoveBan {
                     guild_id: event.room_id.clone(),
-                    user_id: event.state_key().to_owned(),
+                    user_id: crate::keys::decode_user_key(event.state_key()),
                 }
             } else {
                 let c: BanEventContent = content(event)?;
                 ProjectionOp::Ban(BanRow {
                     guild_id: event.room_id.clone(),
-                    user_id: event.state_key().to_owned(),
+                    user_id: crate::keys::decode_user_key(event.state_key()),
                     reason: c.reason,
                     banned_by: Some(c.banned_by.to_string()),
                     created_at: Some(c.created_at as i64),
@@ -157,13 +157,13 @@ pub fn project(event: &RawEvent) -> Result<Option<ProjectionOp>> {
             if is_removal(event) {
                 ProjectionOp::RemoveJoinRequest {
                     guild_id: event.room_id.clone(),
-                    user_id: event.state_key().to_owned(),
+                    user_id: crate::keys::decode_user_key(event.state_key()),
                 }
             } else {
                 let c: JoinRequestEventContent = content(event)?;
                 ProjectionOp::JoinRequest(JoinRequestRow {
                     guild_id: event.room_id.clone(),
-                    user_id: event.state_key().to_owned(),
+                    user_id: crate::keys::decode_user_key(event.state_key()),
                     message: c.message,
                     status: enum_str(&c.status),
                     requested_at: c.requested_at as i64,

@@ -91,6 +91,9 @@ code="$(printf '%s' "$invite_json" | jget code)"
 preview="$(curl -fsS "$BASE/_nuck/v1/invites/$code")"
 printf '%s' "$preview" | grep -q "$guild_id" || { echo "FAIL: invite preview" >&2; exit 1; }
 curl -fsS -X POST "$BASE/_nuck/v1/invites/$code/redeem" -H "Authorization: Bearer $bob_token" >/dev/null
+# The bot invited bob; accept by joining the guild room (no admin token needed).
+curl -fsS -X POST "$BASE/_matrix/client/v3/rooms/$guild_id/join" \
+    -H "Authorization: Bearer $bob_token" -H 'content-type: application/json' -d '{}' >/dev/null || true
 for _ in $(seq 1 40); do
     code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/_nuck/v1/guilds/$guild_id" \
         -H "Authorization: Bearer $bob_token")

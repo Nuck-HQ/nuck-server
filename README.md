@@ -67,6 +67,7 @@ LiveKit SFU. The whole stack ships as a multi-container, one-command install.
 | [0042](./docs/adr/0042-protocol-specification-artifacts.md) | Protocol spec finalized: permission table, event registry, role IDs |
 | [0043](./docs/adr/0043-state-removal-empty-content.md) | State removal: empty-content encoding (no Matrix state deletion) |
 | [0044](./docs/adr/0044-v1-friends-storage.md) | v1 friends & blocking held in the projection (single server) |
+| [0045](./docs/adr/0045-user-state-key-encoding.md) | User-id state keys encoded (Tuwunel auth constraint) |
 
 ## Status
 

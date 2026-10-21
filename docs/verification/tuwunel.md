@@ -222,3 +222,25 @@ No obstacle found: Tuwunel is a full Matrix implementation with the standard sta
 resolution and power-level machinery, which is what ADR 0005/0006/0014 depend on.
 Custom room `type` and custom `space.nuck.*` state events are ordinary Matrix
 features. (Worth a targeted test once `nuck-protocol` exists.)
+
+## User-id state keys — a real constraint (2026-10-22)
+
+Found while running the v1 surface against a live substrate: Tuwunel's room auth
+rejects a state event whose `state_key` is **another user's id**, even when sent by the
+privileged action bot —
+
+```
+PUT .../state/space.nuck.ban.v1/%40bob%3Alocalhost  ->  403
+{"errcode":"M_FORBIDDEN","error":"Auth check failed: sender cannot send event with
+ `state_key` matching another user's ID"}
+```
+
+Confirmed for `space.nuck.member.v1`, `space.nuck.ban.v1`, and a user-keyed
+`space.nuck.override.v1`. This is a Tuwunel-specific auth check (it is **not** a general
+Matrix auth rule); it does not apply to the standard `m.room.member`, which those events
+are not.
+
+**Resolution:** user-id state keys are **encoded without the leading `@`** (ADR 0045),
+which the projection decodes back to the real user id. Role ids and `everyone` are
+unaffected. The fake substrate used by the unit tests does not enforce the rule, so this
+was only visible end to end — `scripts/smoke.sh` now exercises it.

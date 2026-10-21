@@ -44,7 +44,7 @@ pub async fn set_override(
     let bot = privileged::action_bot(&state)?;
     let content = serde_json::json!({ "allow": req.allow, "deny": req.deny });
     let event_id = bot
-        .write_state(&channel_id, et::OVERRIDE, &target, content)
+        .write_state(&channel_id, et::OVERRIDE, &crate::keys::encode_override_target(&target), content)
         .await
         .map_err(privileged::internal)?;
 
@@ -74,7 +74,7 @@ pub async fn remove_override(
     let bot = privileged::action_bot(&state)?;
     let content = serde_json::json!({ "allow": Permissions::NONE, "deny": Permissions::NONE });
     let event_id = bot
-        .write_state(&channel_id, et::OVERRIDE, &target, content)
+        .write_state(&channel_id, et::OVERRIDE, &crate::keys::encode_override_target(&target), content)
         .await
         .map_err(privileged::internal)?;
 

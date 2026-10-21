@@ -116,7 +116,7 @@ pub async fn set_member_roles(
     let bot = privileged::action_bot(&state)?;
     let content = serde_json::json!({ "roles": req.roles });
     let event_id = bot
-        .write_state(&guild_id, et::MEMBER, &user_id, content)
+        .write_state(&guild_id, et::MEMBER, &crate::keys::encode_user_key(&user_id), content)
         .await
         .map_err(privileged::internal)?;
 
@@ -151,7 +151,7 @@ pub async fn ban_member(
         "created_at": privileged::now_ms(),
     });
     let event_id = bot
-        .write_state(&guild_id, et::BAN, &user_id, content)
+        .write_state(&guild_id, et::BAN, &crate::keys::encode_user_key(&user_id), content)
         .await
         .map_err(privileged::internal)?;
     bot.ban(&guild_id, &user_id, req.reason.as_deref())
@@ -724,7 +724,7 @@ pub async fn kick_member(
         .map_err(privileged::internal)?;
     // Clear the member's role assignments (ADR 0014: member state is cleaned on leave).
     let event_id = bot
-        .write_state(&guild_id, et::MEMBER, &user_id, serde_json::json!({}))
+        .write_state(&guild_id, et::MEMBER, &crate::keys::encode_user_key(&user_id), serde_json::json!({}))
         .await
         .map_err(privileged::internal)?;
     privileged::record(&state, &guild_id, &actor, "kick", Some(&user_id), &event_id).await?;
@@ -745,7 +745,7 @@ pub async fn unban_member(
     let bot = privileged::action_bot(&state)?;
     bot.unban(&guild_id, &user_id).await.map_err(privileged::internal)?;
     let event_id = bot
-        .write_state(&guild_id, et::BAN, &user_id, serde_json::json!({}))
+        .write_state(&guild_id, et::BAN, &crate::keys::encode_user_key(&user_id), serde_json::json!({}))
         .await
         .map_err(privileged::internal)?;
     privileged::record(&state, &guild_id, &actor, "unban", Some(&user_id), &event_id).await?;
