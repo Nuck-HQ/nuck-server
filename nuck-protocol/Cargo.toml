@@ -1,0 +1,14 @@
+[package]
+name = "nuck-protocol"
+version.workspace = true
+edition.workspace = true
+description = "Shared Nuck protocol types: space.nuck.* events, /_nuck/v1 DTOs, and permissions (ADRs 0014, 0020, 0027)"
+
+[dependencies]
+ruma = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -51,6 +51,16 @@ response shapes and the error model are not yet specified. Everything here is
 | `DELETE` | `/guilds/{guildId}/bans/{userId}` | Unban. |
 | `GET` | `/guilds/{guildId}/audit-log` | Paginated audit room view (ADR 0016). |
 
+**Implemented (ADR 0041):** `POST /guilds/{guildId}/roles`,
+`PUT /guilds/{guildId}/members/{userId}/roles`,
+`PUT /guilds/{guildId}/bans/{userId}`, and
+`GET`/`PUT`/`DELETE /channels/{channelId}/overrides[/{roleOrUserId}]`. Each
+authenticates by Matrix access token, authorizes with the permission engine against
+projected guild state, executes through the privileged action bot, and records the
+actor in the audit log. Privileged actions additionally require guild membership;
+reading a channel's overrides requires channel membership. (Channel-override *removal*
+writes an all-zero override.)
+
 ## Channels (ADR 0005/0020)
 
 | Method | Path | Notes |

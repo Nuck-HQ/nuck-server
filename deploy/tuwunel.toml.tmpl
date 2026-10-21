@@ -1,0 +1,37 @@
+# Tuwunel configuration for the Nuck MVP (rendered by install.sh).
+#
+# The AppService registration is inline here rather than in `appservice_dir`, so
+# Tuwunel loads it at startup with no restart ordering against nuck-server.
+
+[global]
+server_name = "__SERVER_NAME__"
+database_path = "/var/lib/tuwunel"
+address = "0.0.0.0"
+port = 6167
+
+# MVP: single-server. Open federation needs DNS, TLS, and port 8448 (ADR 0010);
+# defer it until the stack is proven.
+allow_federation = false
+
+# MVP: registration is proxied to the substrate. This is open registration — fine on a
+# private/localhost stack, but lock it down (registration token, ADR 0037) before
+# exposing the server publicly.
+allow_registration = true
+yes_i_am_very_very_sure_i_want_an_open_registration_server_prone_to_abuse = true
+
+# The projection's AppService (ADR 0019): the projector and the action bot (ADR 0041)
+# are AppService-managed users.
+[global.appservice.nuck-projector]
+url = "http://nuck-server:8008"
+as_token = "__AS_TOKEN__"
+hs_token = "__HS_TOKEN__"
+sender_localpart = "nuck-projector"
+receive_ephemeral = false
+
+[[global.appservice.nuck-projector.users]]
+exclusive = true
+regex = "^@nuck-projector:__SERVER_RE__$"
+
+[[global.appservice.nuck-projector.users]]
+exclusive = true
+regex = "^@nuck-bot:__SERVER_RE__$"

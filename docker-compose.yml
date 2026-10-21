@@ -1,0 +1,70 @@
+# Nuck MVP stack (ADR 0012): Tuwunel substrate + Postgres index + nuck-server.
+#
+# Run ./install.sh first — it generates .env and data/tuwunel.toml (including the
+# AppService registration) and then starts the stack.
+
+name: nuck
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nuck
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?run ./install.sh first}
+      POSTGRES_DB: nuck
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nuck -d nuck"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    networks: [nuck]
+
+  # The Matrix substrate. Never internet-facing: only nuck-server reaches it.
+  tuwunel:
+    image: ghcr.io/matrix-construct/tuwunel:latest
+    restart: unless-stopped
+    # A database migration on first boot after an upgrade must not be killed.
+    stop_grace_period: 30m
+    environment:
+      TUWUNEL_CONFIG: /etc/tuwunel.toml
+    volumes:
+      - ./data/tuwunel.toml:/etc/tuwunel.toml:ro
+      - tuwunel-db:/var/lib/tuwunel
+    networks: [nuck]
+
+  nuck-server:
+    build: .
+    restart: unless-stopped
+    environment:
+      NUCK_BIND_ADDR: 0.0.0.0:8008
+      NUCK_SERVER_NAME: ${NUCK_SERVER_NAME:?run ./install.sh first}
+      DATABASE_URL: postgres://nuck:${POSTGRES_PASSWORD}@postgres:5432/nuck
+      TUWUNEL_URL: http://tuwunel:6167
+      # Optional: a Tuwunel administrator access token. Only reconciliation needs it;
+      # the action bot writes with the AppService token, so the MVP runs without it.
+      TUWUNEL_ADMIN_TOKEN: ${TUWUNEL_ADMIN_TOKEN:-}
+
+      APPSERVICE_ID: nuck-projector
+      APPSERVICE_HS_TOKEN: ${APPSERVICE_HS_TOKEN:?run ./install.sh first}
+      APPSERVICE_AS_TOKEN: ${APPSERVICE_AS_TOKEN:?run ./install.sh first}
+      APPSERVICE_USER: "@nuck-projector:${NUCK_SERVER_NAME}"
+      NUCK_BOT_USER: "@nuck-bot:${NUCK_SERVER_NAME}"
+      NUCK_BOT_TOKEN: ${APPSERVICE_AS_TOKEN}
+
+      RUST_LOG: ${RUST_LOG:-nuck_server=info,tower_http=info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${NUCK_PORT:-8008}:8008"
+    networks: [nuck]
+
+volumes:
+  pgdata:
+  tuwunel-db:
+
+networks:
+  nuck:

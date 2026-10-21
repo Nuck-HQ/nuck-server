@@ -104,6 +104,14 @@ Delivery goes through the `sending` service (with retry/backoff; there is a
 joined to every guild room** to receive remote events — the auto-join plan is
 correct and required.
 
+**Registration (`docs/appservices.md`):** three methods exist — the admin-room command
+`!admin appservices register` (persisted in the database, applied **live**, no restart),
+inline `tuwunel.toml` config, and an `appservice_dir` of YAML registration files (loaded
+on **startup**; new/removed files need a restart). There is **no HTTP registration
+endpoint**. nuck-server therefore *generates* the registration document and, when
+`APPSERVICE_REGISTRATION_PATH` is set, writes it into `appservice_dir`; the admin-room
+form of the same YAML applies it live.
+
 ## 4. MatrixRTC — ⚠️ confirmed, one design refinement
 
 `docs/calls/matrix_rtc.md`: MatrixRTC (Element Call) is supported, using

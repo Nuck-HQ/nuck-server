@@ -62,8 +62,47 @@ actions.**
   *membership + coarse power tiers*, which **is** exactly enforceable, with
   nuck-server authoritative for everything fine-grained.
 - **ADR 0022's property test changes:** instead of testing fine-grained mirror
-  exactness (impossible), it should test (a) the coarse tiering is exact, and (b) the
-  authorization engine itself. The existing `mirror_invariant.rs` tests remain useful
-  as documentation of why mirroring is not the enforcement path.
+  exactness (impossible), it should test (a) the coarse tiering is exact, and (b)
+  the authorization engine itself. The existing `mirror_invariant.rs` tests remain
+  useful as documentation of why mirroring is not the enforcement path.
 - The permission bitfield and `required_level`s are no longer a security-critical
   substrate mapping; they are an ordering used by the engine and for role comparison.
+
+## Implementation (2026-10-21)
+
+The execution path is implemented for the first privileged actions.
+
+- **Identity** — `api::auth::AuthenticatedUser` resolves the bearer token to a Matrix
+  user via `GET /_matrix/client/v3/account/whoami`; there is no second login
+  (ADR 0009). A rejected token is `401`; an unreachable substrate is `503` (ADR 0026:
+  never silently misbehave).
+- **Membership** — `m.room.member` is projected (`memberships`, ADR 0019/0005), so
+  guild membership (the guild Space room) and channel access (the channel room) are
+  real checks. Privileged actions require guild membership; channel reads are gated by
+  channel membership.
+- **Authorization** — `authorization::load` reads the guild's roles and the caller's
+  role assignments from the projection and computes their standing with the protocol
+  engine (`nuck_protocol::authorization`). `GuildAccess` answers the permission and
+  hierarchy questions. Only the guild's **home server** acts (ADR 0038); a guild hosted
+  elsewhere returns `501` until S2S relay exists.
+- **Execution** — `bot::ActionBot` performs the substrate write as the AppService
+  **action bot** (ADR 0018/0028): a `space.nuck.*` state event through the C-S state
+  endpoint, or a membership ban. The client's request is never a room event — only the
+  resulting action is.
+- **Attribution** — where the event schema has an actor field it is set (e.g.
+  `space.nuck.ban.v1.banned_by`); every action also appends an `audit_log` row keyed by
+  the resulting event id, recording the real actor, action, and target (ADR 0016).
+- **Endpoints** — `POST /_nuck/v1/guilds/{id}/roles`,
+  `PUT /_nuck/v1/guilds/{id}/members/{userId}/roles`,
+  `PUT /_nuck/v1/guilds/{id}/bans/{userId}`,
+  `GET`/`PUT`/`DELETE /_nuck/v1/channels/{id}/overrides[/{target}]`.
+
+**Open:** cross-server relay for guilds hosted on other servers; and role
+update/delete, unban, kick, and redaction. (Guild ownership and membership are now
+projected — ADR 0019 — so the owner bypass and membership gating are live.)
+
+Verified: `cargo test --workspace` (80 tests) against a real Postgres and a fake
+Tuwunel, plus `cargo clippy --workspace --all-targets` clean. The new `tests/guilds.rs`
+drives the full path: token validation, membership gating, the owner bypass, permission
+and hierarchy refusals, the can't-grant-what-you-don't-hold guard, the bot's recorded
+substrate writes, audit attribution, and channel overrides resolving through the engine.

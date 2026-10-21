@@ -65,6 +65,10 @@ LiveKit SFU. The whole stack ships as a multi-container, one-command install.
 | [0040](./adr/0040-scalar-power-level-limitation.md) | **Finding:** a scalar power level cannot mirror an arbitrary permission set (superseded by 0041) |
 | [0041](./adr/0041-bot-mediated-privileged-actions.md) | Bot-mediated privileged actions; power levels used only coarsely |
 
+## Building it
+
+- [`mvp.md`](./mvp.md) — the deployable-MVP definition, milestones, and runbook.
+
 ## Protocol (drafts)
 
 First drafts of the concrete protocol, bridging design to code. Not final.

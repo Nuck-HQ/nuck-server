@@ -1,0 +1,38 @@
+[package]
+name = "nuck-server"
+version.workspace = true
+edition.workspace = true
+description = "Nuck backend: a Rust BFF in front of an unmodified Tuwunel homeserver (ADRs 0003, 0004)"
+
+[lib]
+name = "nuck_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nuck-server"
+path = "src/main.rs"
+
+[dependencies]
+nuck-protocol = { workspace = true }
+
+anyhow = { workspace = true }
+axum = { workspace = true }
+dotenvy = { workspace = true }
+reqwest = { workspace = true }
+ruma = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

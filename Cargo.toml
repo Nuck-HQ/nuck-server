@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = ["nuck-protocol", "nuck-server"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.lints.rust]
+# ruma's event derive emits `#[cfg(ruma_unstable_exhaustive_types)]`; declare it so
+# our crates don't warn about an unexpected cfg.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(ruma_unstable_exhaustive_types)"] }
+
+[workspace.dependencies]
+nuck-protocol = { path = "nuck-protocol" }
+
+# Matrix protocol types (ADR 0004). `events` provides custom event content macros.
+ruma = { version = "0.17", features = ["events"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# HTTP client for the Tuwunel substrate (ADR 0028): the AppService API, the
+# Synapse-compatible admin API for reconciliation, and C-S requests. Rustls so the
+# container image needs no system OpenSSL.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+
+# Derived index store (ADR 0015). Postgres only, always.
+sqlx = { version = "0.9", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls-ring",
+    "postgres",
+    "macros",
+    "migrate",
+    "uuid",
+    "json",
+] }
+
+uuid = { version = "1", features = ["v4", "serde"] }
+dotenvy = "0.15"
