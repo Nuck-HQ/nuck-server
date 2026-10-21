@@ -131,6 +131,18 @@ pub struct AuditEntry {
     pub created_at: i64,
 }
 
+/// An audit-log row with its sequence id, for the paginated read (ADR 0016).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AuditLogRow {
+    pub id: i64,
+    pub guild_id: String,
+    pub actor: String,
+    pub action: String,
+    pub target: Option<String>,
+    pub event_id: String,
+    pub created_at: i64,
+}
+
 /// A searchable message (ADR 0029).
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct MessageRow {

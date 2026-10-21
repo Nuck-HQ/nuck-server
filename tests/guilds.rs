@@ -26,7 +26,8 @@ use nuck_server::db;
 use nuck_server::matrix::SubstrateClient;
 use nuck_server::permissions::{EVERYONE_ROLE_ID, Permissions};
 use nuck_server::projection::{
-    ChannelRow, GuildOwnerRow, GuildRow, MemberRow, MembershipRow, OverrideRow, Projection, RoleRow,
+    AuditEntry, BanRow, ChannelRow, GuildOwnerRow, GuildRow, MemberRow, MembershipRow, OverrideRow,
+    Projection, RoleRow,
 };
 use nuck_server::state::AppState;
 use serde_json::{Value, json};
@@ -88,6 +89,11 @@ impl Fake {
 fn fake_router(fake: Fake) -> Router {
     Router::new()
         .route("/_matrix/client/v3/account/whoami", get(fake_whoami))
+        .route("/_matrix/client/v3/profile/{user_id}", get(fake_profile))
+        .route(
+            "/_matrix/client/v3/user/{user_id}/account_data/{event_type}",
+            get(fake_account_data),
+        )
         .route(
             "/_matrix/client/v3/rooms/{room_id}/state/{event_type}/{state_key}",
             put(fake_send_state),
@@ -147,6 +153,22 @@ async fn fake_membership(
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers.get(header::AUTHORIZATION)?.to_str().ok()?.strip_prefix("Bearer ")
+}
+
+async fn fake_profile(Path(_user_id): Path<String>) -> Response {
+    (
+        StatusCode::OK,
+        Json(json!({ "displayname": "Display Name", "avatar_url": "mxc://example.org/av" })),
+    )
+        .into_response()
+}
+
+async fn fake_account_data(Path((_user_id, event_type)): Path<(String, String)>) -> Response {
+    if event_type == "space.nuck.settings.v1" {
+        (StatusCode::OK, Json(json!({ "theme": "dark" }))).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, Json(json!({ "errcode": "M_NOT_FOUND" }))).into_response()
+    }
 }
 
 // --- Harness ---------------------------------------------------------------
@@ -1069,4 +1091,231 @@ async fn the_guild_owner_bypasses_the_role_hierarchy() {
 
 async fn body_bytes(response: Response) -> Vec<u8> {
     axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap().to_vec()
+}
+
+// --- Guild reads (ADR 0005/0013) -------------------------------------------
+
+#[tokio::test]
+async fn list_guilds_returns_only_the_callers_guilds() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await; // ACTOR is a joined member of GUILD
+    seed_guild(&h.projection, "!other:example.org", SERVER).await; // never joined
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request("GET", "/_nuck/v1/guilds", Some(USER_TOKEN), None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    let guilds = body["guilds"].as_array().unwrap();
+    assert_eq!(guilds.len(), 1, "only the joined guild is listed");
+    assert_eq!(guilds[0]["guild_id"], GUILD);
+    assert_eq!(guilds[0]["owner"], ACTOR);
+}
+
+#[tokio::test]
+async fn list_channels_returns_the_guilds_channels() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+    seed_channel(&h.projection, CHANNEL, GUILD).await;
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/_nuck/v1/guilds/{GUILD}/channels"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    let channels = body["channels"].as_array().unwrap();
+    assert_eq!(channels.len(), 1);
+    assert_eq!(channels[0]["channel_id"], CHANNEL);
+}
+
+#[tokio::test]
+async fn list_roles_orders_by_position_and_hides_nothing() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await; // @everyone (0) + admin (100)
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/_nuck/v1/guilds/{GUILD}/roles"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    let roles = body["roles"].as_array().unwrap();
+    assert_eq!(roles.len(), 2);
+    assert_eq!(roles[0]["role_id"], "admin", "highest position first");
+}
+
+#[tokio::test]
+async fn list_members_includes_roles_and_requires_membership() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/_nuck/v1/guilds/{GUILD}/members"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["user_id"], ACTOR);
+    assert_eq!(items[0]["membership"], "join");
+    assert_eq!(items[0]["roles"][0], "admin");
+
+    // A non-member is refused.
+    seed_guild(&h.projection, "!private:example.org", SERVER).await;
+    let refused = h
+        .app
+        .clone()
+        .oneshot(request(
+            "GET",
+            "/_nuck/v1/guilds/!private:example.org/members",
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn list_bans_requires_ban_members_and_returns_bans() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+    h.projection
+        .upsert_ban(&BanRow {
+            guild_id: GUILD.to_owned(),
+            user_id: OTHER.to_owned(),
+            reason: Some("spam".to_owned()),
+            banned_by: Some(ACTOR.to_owned()),
+            created_at: Some(1),
+            event_id: "$ban1".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/_nuck/v1/guilds/{GUILD}/bans"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["user_id"], OTHER);
+
+    // A plain member without BAN_MEMBERS is refused.
+    let other = h
+        .app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/_nuck/v1/guilds/{GUILD}/bans"),
+            Some(OTHER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    // OTHER is not a member at all here, so membership is the first gate (403).
+    assert_eq!(other.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn list_audit_log_requires_view_audit_log() {
+    let Some(h) = setup().await else { return };
+    seed_admin(&h.projection).await;
+    h.projection
+        .append_audit(&AuditEntry {
+            guild_id: GUILD.to_owned(),
+            actor: ACTOR.to_owned(),
+            action: "ban".to_owned(),
+            target: Some(OTHER.to_owned()),
+            event_id: "$audit1".to_owned(),
+            created_at: 7,
+        })
+        .await
+        .unwrap();
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/_nuck/v1/guilds/{GUILD}/audit-log"),
+            Some(USER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["actor"], ACTOR);
+    assert_eq!(items[0]["action"], "ban");
+
+    // A member without VIEW_AUDIT_LOG is refused.
+    seed_role(&h.projection, GUILD, "pleb", 1, Permissions::SEND_MESSAGES).await;
+    seed_member(&h.projection, GUILD, OTHER, &["pleb"]).await;
+    let refused = h
+        .app
+        .clone()
+        .oneshot(request(
+            "GET",
+            &format!("/_nuck/v1/guilds/{GUILD}/audit-log"),
+            Some(OTHER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn me_returns_profile_and_settings() {
+    let Some(h) = setup().await else { return };
+
+    let response = h
+        .app
+        .clone()
+        .oneshot(request("GET", "/_nuck/v1/me", Some(USER_TOKEN), None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(body["user_id"], ACTOR);
+    assert_eq!(body["display_name"], "Display Name");
+    assert_eq!(body["avatar_url"], "mxc://example.org/av");
+    assert_eq!(body["settings"]["theme"], "dark");
 }

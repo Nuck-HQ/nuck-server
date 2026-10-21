@@ -529,6 +529,99 @@ impl Projection {
         Ok(rows)
     }
 
+    /// The guilds a user is a **joined** member of, ordered by guild id.
+    ///
+    /// Guild membership is membership in the guild Space room (ADR 0005), so this joins
+    /// `guilds` to `memberships`. Returns `(guild_id, home_server, name, owner)`.
+    pub async fn list_guilds_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<(String, String, Option<String>, Option<String>)>> {
+        let rows = sqlx::query_as(
+            "SELECT g.guild_id, g.home_server, g.name, o.owner
+             FROM guilds g
+             JOIN memberships m ON m.room_id = g.guild_id
+             LEFT JOIN guild_owners o ON o.guild_id = g.guild_id
+             WHERE m.user_id = $1 AND m.membership = 'join'
+             ORDER BY g.guild_id ASC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// A guild's members (joined or invited), ordered by user id, cursor-paginated.
+    ///
+    /// Returns `(user_id, membership, roles)`. Display names are not projected.
+    pub async fn list_guild_members(
+        &self,
+        guild_id: &str,
+        after: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<(String, String, Vec<String>)>> {
+        let rows = sqlx::query_as(
+            "SELECT m.user_id, m.membership, COALESCE(mb.roles, '{}'::text[])
+             FROM memberships m
+             LEFT JOIN members mb ON mb.guild_id = m.room_id AND mb.user_id = m.user_id
+             WHERE m.room_id = $1
+               AND m.membership IN ('join', 'invite')
+               AND ($2::text IS NULL OR m.user_id > $2)
+             ORDER BY m.user_id ASC
+             LIMIT $3",
+        )
+        .bind(guild_id)
+        .bind(after)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// A guild's bans, ordered by user id, cursor-paginated.
+    pub async fn list_bans(
+        &self,
+        guild_id: &str,
+        after: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<BanRow>> {
+        let rows = sqlx::query_as::<_, BanRow>(
+            "SELECT guild_id, user_id, reason, banned_by, created_at, event_id
+             FROM bans WHERE guild_id = $1
+               AND ($2::text IS NULL OR user_id > $2)
+             ORDER BY user_id ASC
+             LIMIT $3",
+        )
+        .bind(guild_id)
+        .bind(after)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// A guild's audit log, newest first, cursor-paginated by descending id (ADR 0016).
+    pub async fn list_audit(
+        &self,
+        guild_id: &str,
+        before_id: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<AuditLogRow>> {
+        let rows = sqlx::query_as::<_, AuditLogRow>(
+            "SELECT id, guild_id, actor, action, target, event_id, created_at
+             FROM audit_log WHERE guild_id = $1
+               AND ($2::bigint IS NULL OR id < $2)
+             ORDER BY id DESC
+             LIMIT $3",
+        )
+        .bind(guild_id)
+        .bind(before_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// A channel's permission overrides (ADR 0020).
     pub async fn list_overrides(&self, channel_id: &str) -> Result<Vec<OverrideRow>> {
         let rows = sqlx::query_as::<_, OverrideRow>(

@@ -12,12 +12,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use nuck_protocol::api::{
-    ActionResponse, BanRequest, ChannelInfo, CreateChannelRequest, CreateGuildRequest,
-    CreateRoleRequest, CreateRoleResponse, GuildResponse, GuildView, RoleInfo,
-    SetMemberRolesRequest,
+    ActionResponse, AuditEntry, AuditLogResponse, BanInfo, BanRequest, BansResponse, ChannelInfo,
+    ChannelsResponse, CreateChannelRequest, CreateGuildRequest, CreateRoleRequest,
+    CreateRoleResponse, GuildResponse, GuildSummary, GuildView, GuildsResponse, MemberInfo,
+    MembersResponse, RoleInfo, RolesResponse, SetMemberRolesRequest,
 };
 use nuck_protocol::authorization::EVERYONE_ROLE_ID;
 use nuck_protocol::events::{ChannelKind, event_types as et};
@@ -28,6 +29,7 @@ use crate::state::AppState;
 
 use super::auth::AuthenticatedUser;
 use super::error::ApiErrorResponse;
+use super::page::PageQuery;
 use super::privileged;
 
 /// `POST /_nuck/v1/guilds/{guildId}/roles` — create a role.
@@ -332,6 +334,193 @@ pub async fn get_guild(
         channels,
         roles,
     }))
+}
+
+// --- Guild reads (ADR 0005/0013) -------------------------------------------
+
+/// `GET /_nuck/v1/guilds` — the guilds the caller is a joined member of.
+pub async fn list_guilds(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id, .. }: AuthenticatedUser,
+) -> Result<Json<GuildsResponse>, ApiErrorResponse> {
+    let rows = privileged::projection(&state)?
+        .list_guilds_for_user(&user_id)
+        .await
+        .map_err(privileged::internal)?;
+    let server = state.config.server_name.clone();
+    let guilds = rows
+        .into_iter()
+        .map(|(guild_id, home_server, name, owner)| GuildSummary {
+            guild_id,
+            name,
+            home_server: if home_server.is_empty() { server.clone() } else { home_server },
+            owner,
+        })
+        .collect();
+    Ok(Json(GuildsResponse { guilds }))
+}
+
+/// `GET /_nuck/v1/guilds/{guildId}/channels` — channels in display order.
+pub async fn list_channels(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id, .. }: AuthenticatedUser,
+    Path(guild_id): Path<String>,
+) -> Result<Json<ChannelsResponse>, ApiErrorResponse> {
+    let access = privileged::load(&state, &guild_id, &user_id).await?;
+    privileged::require_member(&access)?;
+    let channels = privileged::projection(&state)?
+        .list_channels(&guild_id)
+        .await
+        .map_err(privileged::internal)?
+        .into_iter()
+        .map(channel_info)
+        .collect();
+    Ok(Json(ChannelsResponse { channels }))
+}
+
+/// `GET /_nuck/v1/guilds/{guildId}/roles` — roles, highest position first.
+pub async fn list_roles(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id, .. }: AuthenticatedUser,
+    Path(guild_id): Path<String>,
+) -> Result<Json<RolesResponse>, ApiErrorResponse> {
+    let access = privileged::load(&state, &guild_id, &user_id).await?;
+    privileged::require_member(&access)?;
+    let roles = privileged::projection(&state)?
+        .list_roles(&guild_id)
+        .await
+        .map_err(privileged::internal)?
+        .into_iter()
+        .map(role_info)
+        .collect();
+    Ok(Json(RolesResponse { roles }))
+}
+
+/// `GET /_nuck/v1/guilds/{guildId}/members` — paginated member list.
+pub async fn list_members(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id, .. }: AuthenticatedUser,
+    Path(guild_id): Path<String>,
+    Query(page): Query<PageQuery>,
+) -> Result<Json<MembersResponse>, ApiErrorResponse> {
+    let access = privileged::load(&state, &guild_id, &user_id).await?;
+    privileged::require_member(&access)?;
+    let rows = privileged::projection(&state)?
+        .list_guild_members(&guild_id, page.cursor(), page.limit())
+        .await
+        .map_err(privileged::internal)?;
+    let next_cursor = if page.is_full(rows.len()) {
+        rows.last().map(|(user_id, _, _)| user_id.clone())
+    } else {
+        None
+    };
+    let items = rows
+        .into_iter()
+        .map(|(user_id, membership, roles)| MemberInfo {
+            user_id,
+            membership,
+            roles,
+            display_name: None,
+        })
+        .collect();
+    Ok(Json(MembersResponse { items, next_cursor }))
+}
+
+/// `GET /_nuck/v1/guilds/{guildId}/bans` — paginated (ADR 0016).
+pub async fn list_bans(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id, .. }: AuthenticatedUser,
+    Path(guild_id): Path<String>,
+    Query(page): Query<PageQuery>,
+) -> Result<Json<BansResponse>, ApiErrorResponse> {
+    let access = privileged::load(&state, &guild_id, &user_id).await?;
+    privileged::require_member(&access)?;
+    privileged::require(&access, Permissions::BAN_MEMBERS, "BAN_MEMBERS")?;
+    let rows = privileged::projection(&state)?
+        .list_bans(&guild_id, page.cursor(), page.limit())
+        .await
+        .map_err(privileged::internal)?;
+    let next_cursor = if page.is_full(rows.len()) {
+        rows.last().map(|ban| ban.user_id.clone())
+    } else {
+        None
+    };
+    let items = rows
+        .into_iter()
+        .map(|ban| BanInfo {
+            user_id: ban.user_id,
+            reason: ban.reason,
+            banned_by: ban.banned_by.unwrap_or_default(),
+            created_at: ban.created_at.unwrap_or_default().max(0) as u64,
+        })
+        .collect();
+    Ok(Json(BansResponse { items, next_cursor }))
+}
+
+/// `GET /_nuck/v1/guilds/{guildId}/audit-log` — newest first (ADR 0016).
+pub async fn list_audit_log(
+    State(state): State<Arc<AppState>>,
+    AuthenticatedUser { user_id, .. }: AuthenticatedUser,
+    Path(guild_id): Path<String>,
+    Query(page): Query<PageQuery>,
+) -> Result<Json<AuditLogResponse>, ApiErrorResponse> {
+    let access = privileged::load(&state, &guild_id, &user_id).await?;
+    privileged::require_member(&access)?;
+    privileged::require(&access, Permissions::VIEW_AUDIT_LOG, "VIEW_AUDIT_LOG")?;
+    let before_id = match page.cursor() {
+        Some(cursor) => Some(
+            cursor
+                .parse::<i64>()
+                .map_err(|_| ApiErrorResponse::bad_request("invalid cursor"))?,
+        ),
+        None => None,
+    };
+    let rows = privileged::projection(&state)?
+        .list_audit(&guild_id, before_id, page.limit())
+        .await
+        .map_err(privileged::internal)?;
+    let next_cursor = if page.is_full(rows.len()) {
+        rows.last().map(|entry| entry.id.to_string())
+    } else {
+        None
+    };
+    let items = rows
+        .into_iter()
+        .map(|entry| AuditEntry {
+            id: entry.id,
+            actor: entry.actor,
+            action: entry.action,
+            target: entry.target,
+            reason: None,
+            event_id: entry.event_id,
+            created_at: entry.created_at.max(0) as u64,
+        })
+        .collect();
+    Ok(Json(AuditLogResponse { items, next_cursor }))
+}
+
+/// Project a channel row into the wire shape.
+fn channel_info(c: crate::projection::ChannelRow) -> ChannelInfo {
+    ChannelInfo {
+        channel_id: c.channel_id,
+        kind: c.kind,
+        position: c.position,
+        category: c.category,
+    }
+}
+
+/// Project a role row into the wire shape.
+fn role_info(r: crate::projection::RoleRow) -> RoleInfo {
+    let permissions = r.perms();
+    RoleInfo {
+        role_id: r.role_id,
+        name: r.name,
+        position: r.position,
+        permissions,
+        color: r.color.map(|color| color as u32),
+        hoist: r.hoist,
+        mentionable: r.mentionable,
+    }
 }
 
 /// `POST /_nuck/v1/guilds/{guildId}/channels` — create a channel.

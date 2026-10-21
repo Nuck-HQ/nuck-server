@@ -97,6 +97,15 @@ struct CreatedRoom {
     room_id: String,
 }
 
+/// A user's profile (the parts Nuck surfaces).
+#[derive(Debug, Deserialize)]
+struct ProfileBody {
+    #[serde(default)]
+    displayname: Option<String>,
+    #[serde(default)]
+    avatar_url: Option<String>,
+}
+
 /// A state event as the C-S API returns it (it may omit `room_id`).
 #[derive(Debug, Deserialize)]
 struct ClientStateEvent {
@@ -187,6 +196,34 @@ impl SubstrateClient {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => Ok(None),
             status => bail!("whoami returned {status}"),
         }
+    }
+
+    // --- Identity reads (ADR 0009/0028) ------------------------------------
+
+    /// A user's profile (display name / avatar), or `None` when the substrate has none.
+    pub async fn profile(
+        &self,
+        token: &str,
+        user_id: &str,
+    ) -> Result<Option<(Option<String>, Option<String>)>> {
+        let path = format!("/_matrix/client/v3/profile/{}", encode_path(user_id));
+        let body: Option<ProfileBody> = self.call_optional(Method::GET, &path, token).await?;
+        Ok(body.map(|p| (p.displayname, p.avatar_url)))
+    }
+
+    /// A user's account-data content (ADR 0030), or `None` when unset.
+    pub async fn account_data(
+        &self,
+        token: &str,
+        user_id: &str,
+        event_type: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let path = format!(
+            "/_matrix/client/v3/user/{}/account_data/{}",
+            encode_path(user_id),
+            encode_path(event_type),
+        );
+        self.call_optional(Method::GET, &path, token).await
     }
 
     // --- Admin reads (ADR 0019) --------------------------------------------
@@ -392,6 +429,37 @@ impl SubstrateClient {
             .as_deref()
             .context("no Tuwunel admin token configured")?;
         self.call(method, path, token, body).await
+    }
+
+    /// Like [`Self::call`], but maps a 404 to `Ok(None)` instead of an error.
+    async fn call_optional<T: serde::de::DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        token: &str,
+    ) -> Result<Option<T>> {
+        let url = format!("{}{path}", self.base_url);
+        let response = self
+            .http
+            .request(method.clone(), &url)
+            .bearer_auth(token)
+            .send()
+            .await
+            .with_context(|| format!("{method} {url} failed"))?;
+        let status = response.status();
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            let detail = response.text().await.unwrap_or_default();
+            bail!("{method} {path} returned {status}: {detail}");
+        }
+        Ok(Some(
+            response
+                .json::<T>()
+                .await
+                .with_context(|| format!("{method} {path} returned an unexpected body"))?,
+        ))
     }
 
     /// Perform a request authenticated with `token`, decoding a JSON body.

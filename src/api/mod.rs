@@ -12,6 +12,8 @@ pub mod channels;
 pub mod error;
 pub mod guilds;
 pub mod health;
+pub mod me;
+pub mod page;
 pub mod privileged;
 pub mod proxy;
 pub mod server_info;
@@ -29,20 +31,28 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/healthz", get(health::healthz))
         .route("/_nuck/v1/server-info", get(server_info::server_info))
+        .route("/_nuck/v1/me", get(me::me))
+        // Guild reads (ADR 0005/0013).
+        .route("/_nuck/v1/guilds/{guild_id}/members", get(guilds::list_members))
+        .route("/_nuck/v1/guilds/{guild_id}/bans", get(guilds::list_bans))
+        .route("/_nuck/v1/guilds/{guild_id}/audit-log", get(guilds::list_audit_log))
         // Privileged guild actions: authorized here, executed by the action bot
         // (ADR 0041).
-        .route("/_nuck/v1/guilds/{guild_id}/roles", post(guilds::create_role))
+        .route(
+            "/_nuck/v1/guilds/{guild_id}/roles",
+            post(guilds::create_role).get(guilds::list_roles),
+        )
         .route(
             "/_nuck/v1/guilds/{guild_id}/members/{user_id}/roles",
             put(guilds::set_member_roles),
         )
         .route("/_nuck/v1/guilds/{guild_id}/bans/{user_id}", put(guilds::ban_member))
-        // Guild & channel provisioning (MVP M3).
-        .route("/_nuck/v1/guilds", post(guilds::create_guild))
+        // Guild & channel provisioning (MVP M3) and listing.
+        .route("/_nuck/v1/guilds", post(guilds::create_guild).get(guilds::list_guilds))
         .route("/_nuck/v1/guilds/{guild_id}", get(guilds::get_guild))
         .route(
             "/_nuck/v1/guilds/{guild_id}/channels",
-            post(guilds::create_channel),
+            post(guilds::create_channel).get(guilds::list_channels),
         )
         .route(
             "/_nuck/v1/channels/{channel_id}/overrides",
