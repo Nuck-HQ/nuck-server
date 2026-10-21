@@ -10,6 +10,7 @@ pub mod appservice;
 pub mod auth;
 pub mod channels;
 pub mod error;
+pub mod friends;
 pub mod guilds;
 pub mod health;
 pub mod invites;
@@ -105,6 +106,27 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/_nuck/v1/guilds/{guild_id}/join-requests/{user_id}/deny",
             post(invites::deny_join_request),
         )
+        // Friends, blocking & DMs (ADR 0030).
+        .route("/_nuck/v1/friends", get(friends::list_friends))
+        .route(
+            "/_nuck/v1/friends/requests",
+            get(friends::list_friend_requests).post(friends::send_friend_request),
+        )
+        .route(
+            "/_nuck/v1/friends/requests/{user_id}/accept",
+            post(friends::accept_friend_request),
+        )
+        .route(
+            "/_nuck/v1/friends/requests/{user_id}/decline",
+            post(friends::decline_friend_request),
+        )
+        .route("/_nuck/v1/friends/{user_id}", delete(friends::remove_friend))
+        .route("/_nuck/v1/blocks", get(friends::list_blocks))
+        .route(
+            "/_nuck/v1/blocks/{user_id}",
+            put(friends::block_user).delete(friends::unblock_user),
+        )
+        .route("/_nuck/v1/dm", post(friends::create_dm))
         .route(
             "/_nuck/v1/channels/{channel_id}/overrides",
             get(channels::list_overrides),

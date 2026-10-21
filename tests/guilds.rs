@@ -71,6 +71,7 @@ struct Fake {
     writes: Arc<Mutex<Vec<Recorded>>>,
     joins: Arc<Mutex<Vec<(String, String)>>>,
     users: Arc<Mutex<Vec<(String, bool)>>>,
+    to_device: Arc<Mutex<Vec<String>>>,
     next_event: Arc<AtomicU64>,
 }
 
@@ -85,6 +86,7 @@ impl Fake {
             writes: Arc::new(Mutex::new(Vec::new())),
             joins: Arc::new(Mutex::new(Vec::new())),
             users: Arc::new(Mutex::new(Vec::new())),
+            to_device: Arc::new(Mutex::new(Vec::new())),
             next_event: Arc::new(AtomicU64::new(1)),
         }
     }
@@ -99,6 +101,10 @@ impl Fake {
 
     fn users(&self) -> Vec<(String, bool)> {
         self.users.lock().unwrap().clone()
+    }
+
+    fn to_device(&self) -> Vec<String> {
+        self.to_device.lock().unwrap().clone()
     }
 }
 
@@ -122,7 +128,24 @@ fn fake_router(fake: Fake) -> Router {
         .route("/_synapse/admin/v1/join/{room_id}", post(fake_admin_join))
         .route("/_synapse/admin/v2/users/{user_id}", put(fake_admin_user))
         .route("/_synapse/admin/v1/users/{user_id}/login", post(fake_admin_login))
+        .route("/_matrix/client/v3/sendToDevice/{event_type}/{txn_id}", put(fake_to_device))
+        .route("/_matrix/client/v3/createRoom", post(fake_create_room))
         .with_state(fake)
+}
+
+/// To-device delivery (ADR 0030 friend requests/responses).
+async fn fake_to_device(
+    State(fake): State<Fake>,
+    Path((event_type, _txn_id)): Path<(String, String)>,
+    Json(_body): Json<Value>,
+) -> Json<Value> {
+    fake.to_device.lock().unwrap().push(event_type);
+    Json(json!({}))
+}
+
+/// Direct-room creation for `POST /_nuck/v1/dm`.
+async fn fake_create_room(Json(_body): Json<Value>) -> Json<Value> {
+    Json(json!({ "room_id": "!dm:example.org" }))
 }
 
 /// Admin user create/modify (registration fulfilment, ADR 0037).
@@ -270,7 +293,7 @@ async fn setup_with(tweak: impl FnOnce(&mut Config)) -> Option<Harness> {
     db::migrate(&pool).await.expect("run migrations");
     sqlx::query(
         "TRUNCATE guilds, guild_owners, roles, members, memberships, channels, overrides, bans,
-                  invites, join_requests, audit_log, messages, processed_events, projection_state",
+                  invites, join_requests, friendships, blocks, friend_requests, registration_requests, audit_log, messages, processed_events, projection_state",
     )
     .execute(&pool)
     .await
@@ -2056,4 +2079,122 @@ async fn approval_mode_queues_then_activates() {
     assert_eq!(approve.status(), StatusCode::OK);
     assert_eq!(h.fake.users().last().unwrap(), &("@hopeful:example.org".to_owned(), false));
     assert!(h.projection.list_registration_requests().await.unwrap().is_empty());
+}
+
+// --- Friends, blocking & DMs (ADR 0030) ------------------------------------
+
+#[tokio::test]
+async fn friend_request_accept_flow() {
+    let Some(h) = setup().await else { return };
+
+    let sent = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/_nuck/v1/friends/requests",
+            Some(USER_TOKEN),
+            Some(json!({ "user_id": OTHER, "message": "hi" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(sent.status(), StatusCode::OK);
+    assert!(h.fake.to_device().iter().any(|t| t == "space.nuck.friend_request.v1"));
+
+    // The recipient sees an incoming request.
+    let incoming = h
+        .app
+        .clone()
+        .oneshot(request("GET", "/_nuck/v1/friends/requests", Some(OTHER_TOKEN), None))
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes(incoming).await).unwrap();
+    assert_eq!(body["requests"][0]["user_id"], ACTOR);
+    assert_eq!(body["requests"][0]["direction"], "incoming");
+
+    // Accept.
+    let accepted = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("/_nuck/v1/friends/requests/{ACTOR}/accept"),
+            Some(OTHER_TOKEN),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(accepted).await).unwrap();
+    assert_eq!(body["friends"][0]["user_id"], ACTOR);
+
+    // The other side sees the friendship too.
+    let friends = h
+        .app
+        .clone()
+        .oneshot(request("GET", "/_nuck/v1/friends", Some(USER_TOKEN), None))
+        .await
+        .unwrap();
+    let body: Value = serde_json::from_slice(&body_bytes(friends).await).unwrap();
+    assert_eq!(body["friends"][0]["user_id"], OTHER);
+}
+
+#[tokio::test]
+async fn blocking_suppresses_dms_and_friend_requests() {
+    let Some(h) = setup().await else { return };
+
+    let blocked = h
+        .app
+        .clone()
+        .oneshot(request("PUT", &format!("/_nuck/v1/blocks/{OTHER}"), Some(USER_TOKEN), None))
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(blocked).await).unwrap();
+    assert_eq!(body["blocked"][0], OTHER);
+
+    let dm = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/_nuck/v1/dm",
+            Some(USER_TOKEN),
+            Some(json!({ "user_id": OTHER })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(dm.status(), StatusCode::FORBIDDEN);
+
+    let request = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/_nuck/v1/friends/requests",
+            Some(USER_TOKEN),
+            Some(json!({ "user_id": OTHER })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(request.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn dm_creates_a_direct_room() {
+    let Some(h) = setup().await else { return };
+    let response = h
+        .app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/_nuck/v1/dm",
+            Some(USER_TOKEN),
+            Some(json!({ "user_id": OTHER })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(body["room_id"], "!dm:example.org");
 }

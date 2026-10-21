@@ -430,6 +430,24 @@ impl SubstrateClient {
         Ok(())
     }
 
+    /// Send a to-device event **as** the token's user (ADR 0030 friend requests).
+    pub async fn send_to_device(
+        &self,
+        token: &str,
+        event_type: &str,
+        txn_id: &str,
+        messages: serde_json::Value,
+    ) -> Result<()> {
+        let path = format!(
+            "/_matrix/client/v3/sendToDevice/{}/{}",
+            encode_path(event_type),
+            encode_path(txn_id),
+        );
+        let body = serde_json::json!({ "messages": messages });
+        let _: serde_json::Value = self.call(Method::PUT, &path, token, Some(body)).await?;
+        Ok(())
+    }
+
     /// Change a room membership **as** an AppService user: `ban`, `kick`, or `unban`.
     pub async fn set_membership(
         &self,

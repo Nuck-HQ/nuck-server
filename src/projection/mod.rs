@@ -595,6 +595,186 @@ impl Projection {
         Ok(())
     }
 
+    // --- Friends & blocking (ADR 0030) -------------------------------------
+
+    /// Record a friendship (normalised so `user_a < user_b`). Idempotent.
+    pub async fn insert_friendship(&self, a: &str, b: &str, since: i64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO friendships (user_a, user_b, since)
+             VALUES (LEAST($1, $2), GREATEST($1, $2), $3)
+             ON CONFLICT (user_a, user_b) DO NOTHING",
+        )
+        .bind(a)
+        .bind(b)
+        .bind(since)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Remove a friendship.
+    pub async fn delete_friendship(&self, a: &str, b: &str) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM friendships
+             WHERE user_a = LEAST($1, $2) AND user_b = GREATEST($1, $2)",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Whether two users are friends.
+    pub async fn are_friends(&self, a: &str, b: &str) -> Result<bool> {
+        let row: (bool,) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM friendships
+             WHERE user_a = LEAST($1, $2) AND user_b = GREATEST($1, $2))",
+        )
+        .bind(a)
+        .bind(b)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    /// A user's friends as `(other_user, since)`, ordered by user id.
+    pub async fn list_friends(&self, user_id: &str) -> Result<Vec<(String, i64)>> {
+        let rows = sqlx::query_as(
+            "SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS other, since
+             FROM friendships WHERE user_a = $1 OR user_b = $1
+             ORDER BY other ASC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Record a block. Idempotent.
+    pub async fn insert_block(&self, blocker: &str, blocked: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO blocks (blocker, blocked) VALUES ($1, $2)
+             ON CONFLICT (blocker, blocked) DO NOTHING",
+        )
+        .bind(blocker)
+        .bind(blocked)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Remove a block.
+    pub async fn delete_block(&self, blocker: &str, blocked: &str) -> Result<()> {
+        sqlx::query("DELETE FROM blocks WHERE blocker = $1 AND blocked = $2")
+            .bind(blocker)
+            .bind(blocked)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// A user's block list, ordered by user id.
+    pub async fn list_blocks(&self, blocker: &str) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT blocked FROM blocks WHERE blocker = $1 ORDER BY blocked ASC")
+                .bind(blocker)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(user,)| user).collect())
+    }
+
+    /// Whether either user has blocked the other.
+    pub async fn is_blocked_either(&self, a: &str, b: &str) -> Result<bool> {
+        let row: (bool,) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM blocks
+             WHERE (blocker = $1 AND blocked = $2) OR (blocker = $2 AND blocked = $1))",
+        )
+        .bind(a)
+        .bind(b)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
+    }
+
+    /// Record a pending friend request. Idempotent on the pair.
+    pub async fn insert_friend_request(
+        &self,
+        from_user: &str,
+        to_user: &str,
+        message: Option<&str>,
+        created_at: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO friend_requests (from_user, to_user, message, created_at)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (from_user, to_user) DO NOTHING",
+        )
+        .bind(from_user)
+        .bind(to_user)
+        .bind(message)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// A pending request in a given direction, if any.
+    pub async fn get_friend_request(
+        &self,
+        from_user: &str,
+        to_user: &str,
+    ) -> Result<Option<(Option<String>, i64)>> {
+        let row = sqlx::query_as(
+            "SELECT message, created_at FROM friend_requests
+             WHERE from_user = $1 AND to_user = $2",
+        )
+        .bind(from_user)
+        .bind(to_user)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
+    /// Delete a pending request in a given direction.
+    pub async fn delete_friend_request(&self, from_user: &str, to_user: &str) -> Result<()> {
+        sqlx::query("DELETE FROM friend_requests WHERE from_user = $1 AND to_user = $2")
+            .bind(from_user)
+            .bind(to_user)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Delete pending requests in both directions between two users.
+    pub async fn delete_friend_requests_between(&self, a: &str, b: &str) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM friend_requests
+             WHERE (from_user = $1 AND to_user = $2) OR (from_user = $2 AND to_user = $1)",
+        )
+        .bind(a)
+        .bind(b)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// A user's pending friend requests as `(from, to, message, created_at)`.
+    pub async fn list_friend_requests(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<(String, String, Option<String>, i64)>> {
+        let rows = sqlx::query_as(
+            "SELECT from_user, to_user, message, created_at FROM friend_requests
+             WHERE from_user = $1 OR to_user = $1
+             ORDER BY created_at ASC, from_user ASC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
     /// Append an audit entry (idempotent on `event_id`).
     pub async fn append_audit(&self, a: &AuditEntry) -> Result<()> {
         sqlx::query(
