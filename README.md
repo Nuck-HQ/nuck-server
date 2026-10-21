@@ -64,17 +64,20 @@ LiveKit SFU. The whole stack ships as a multi-container, one-command install.
 | [0039](./docs/adr/0039-unredacted-retention-policy.md) | Unredacted event retention: operator-only |
 | [0040](./docs/adr/0040-scalar-power-level-limitation.md) | **Finding:** a scalar power level cannot mirror an arbitrary permission set (superseded by 0041) |
 | [0041](./docs/adr/0041-bot-mediated-privileged-actions.md) | Bot-mediated privileged actions; power levels used only coarsely |
+| [0042](./docs/adr/0042-protocol-specification-artifacts.md) | Protocol spec finalized: permission table, event registry, role IDs |
 
 ## Building it
 
 - [`mvp.md`](./docs/mvp.md) — the deployable-MVP definition, milestones, and runbook.
 
-## Protocol (drafts)
+## Protocol specification
 
-First drafts of the concrete protocol, bridging design to code. Not final.
+The concrete protocol. `permissions.md` and `events.md` are **final** (ADR 0042);
+`api.md` is still a draft.
 
+- [`protocol/permissions.md`](./docs/protocol/permissions.md) — the permission bitfield and the coarse power-level mapping.
 - [`protocol/events.md`](./docs/protocol/events.md) — the `space.nuck.*` event registry.
-- [`protocol/api.md`](./docs/protocol/api.md) — the `/_nuck/v1` endpoint inventory.
+- [`protocol/api.md`](./docs/protocol/api.md) — the `/_nuck/v1` endpoint inventory (draft).
 
 ## Verification
 

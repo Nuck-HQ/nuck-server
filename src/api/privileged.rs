@@ -146,8 +146,10 @@ pub fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
-/// A fresh opaque role id (the role-id scheme — ADR 0006 — is still an open question;
-/// an opaque generated id avoids leaking names or positions).
+/// A fresh opaque role id: `r` + 12 lowercase hex characters (ADR 0042).
+///
+/// Opaque ids avoid leaking names or positions, stay stable across renames, and cannot
+/// be mistaken for a Matrix user id. See `docs/protocol/events.md`.
 pub fn new_role_id() -> String {
     let random = uuid::Uuid::new_v4().simple().to_string();
     format!("r{}", &random[..12])

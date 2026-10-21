@@ -38,3 +38,9 @@ versions (ADR 0010). Matrix custom events use reverse-DNS type names.
   rejection.
 - We must maintain a registry of `space.nuck.*` event types and their versions as
   part of the protocol.
+
+## Specification (2026-10-21)
+
+The concrete registry — content schemas, the role-ID scheme, and the registry mechanism
+(owned by `nuck-protocol`, where the code is canonical and test-enforced) — is in
+[`protocol/events.md`](../protocol/events.md) (ADR 0042).

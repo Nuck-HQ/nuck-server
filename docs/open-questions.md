@@ -55,15 +55,19 @@ AppService delivery, and push **confirmed**; admin API, MatrixRTC, and blocklist
 - **`/_nuck/v1` endpoint inventory.** *Drafted* in
   [`protocol/api.md`](./protocol/api.md) — needs request/response schemas, error
   model, and pagination convention.
-- **`space.nuck.*` event registry.** *Drafted* in
-  [`protocol/events.md`](./protocol/events.md) — needs concrete content schemas, a
-  role-ID scheme, and an owner for the registry mechanism.
-- **Permission bitfield layout.** The concrete bit assignments and the exact
-  power-level mapping table. (ADR 0020 fixes the approach, not the table.)
 - **Federation feature-gate matrix.** Which capabilities are gated behind which
   protocol versions. (ADR 0026)
 - **DM-call UX** when text is E2EE but media is not (ADR 0032).
 - **Hosting/upgrade runbook** for the pinned version matrix. (ADR 0026)
+
+## Resolved: protocol specification (ADR 0042)
+
+- **Permission bitfield layout** and the power-level mapping — finalized in
+  [`protocol/permissions.md`](./protocol/permissions.md): the canonical bit table, the
+  reserved extension range, and the coarse power-level mapping.
+- **`space.nuck.*` event registry** — finalized in
+  [`protocol/events.md`](./protocol/events.md): concrete content schemas, the role-ID
+  scheme, and registry ownership (the crate is canonical, test-enforced).
 
 ## Rejected
 

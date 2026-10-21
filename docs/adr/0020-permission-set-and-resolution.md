@@ -91,3 +91,11 @@ overrides (`channel_permissions` short-circuits to `ALL`, like `ADMINISTRATOR`).
 `has()` and `can_grant` remain role-based — the owner still needs the relevant
 permission bit (guild creation is expected to grant them a role, ADR 0038). Channel
 access is gated by room membership, which is also projected (ADR 0019).
+
+## Specification (2026-10-21)
+
+The concrete bit assignments, the reserved extension range, and the coarse power-level
+mapping are finalized in [`protocol/permissions.md`](../protocol/permissions.md)
+(ADR 0042). The table in `nuck-protocol/src/permissions.rs` is canonical and
+test-enforced. `required_level` is demoted to ordering metadata (ADR 0041); the
+fine-grained `mirror()` is retained only as documentation of ADR 0040's finding.
