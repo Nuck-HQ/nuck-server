@@ -66,13 +66,14 @@ pub async fn register(
     }
 
     let approval = mode == RegistrationMode::Approval;
-    state
-        .substrate
-        .admin_create_user(&user_id, &req.password, approval)
-        .await
-        .map_err(|e| ApiErrorResponse::internal(e.to_string()))?;
-
     if approval {
+        // `approval`: create the account deactivated via the admin API (no plaintext
+        // password stored), and queue it.
+        state
+            .substrate
+            .admin_create_user(&user_id, &req.password, true)
+            .await
+            .map_err(|e| ApiErrorResponse::internal(e.to_string()))?;
         let id = uuid::Uuid::new_v4().to_string();
         privileged::projection(&state)?
             .insert_registration_request(&RegistrationRequestRow {
@@ -90,10 +91,10 @@ pub async fn register(
             .into_response());
     }
 
-    // Active account: mint a session via admin login-as (ADR 0028).
-    let (access_token, device_id) = state
+    // `open`/`token`: create the account through the substrate's C-S registration.
+    let (user_id, access_token, device_id) = state
         .substrate
-        .admin_login(&user_id)
+        .register(username, &req.password)
         .await
         .map_err(|e| ApiErrorResponse::internal(e.to_string()))?;
     Ok(Json(RegisterResponse {

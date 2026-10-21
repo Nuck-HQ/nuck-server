@@ -114,6 +114,28 @@ struct LoginAs {
     device_id: String,
 }
 
+/// A successful C-S registration (ADR 0037 `open`/`token` modes).
+#[derive(Debug, Deserialize)]
+struct RegisterSuccess {
+    user_id: String,
+    access_token: String,
+    #[serde(default)]
+    device_id: String,
+}
+
+/// The 401 body that starts the `m.login.dummy` registration flow.
+#[derive(Debug, Deserialize)]
+struct RegisterChallenge {
+    #[serde(default)]
+    session: String,
+}
+
+/// The outcome of one C-S registration step.
+enum RegisterStep {
+    Done(RegisterSuccess),
+    Challenge(String),
+}
+
 /// A state event as the C-S API returns it (it may omit `room_id`).
 #[derive(Debug, Deserialize)]
 struct ClientStateEvent {
@@ -328,6 +350,61 @@ impl SubstrateClient {
         let path = format!("/_synapse/admin/v1/users/{}/login", encode_path(user_id));
         let login: LoginAs = self.admin(Method::POST, &path, Some(serde_json::json!({}))).await?;
         Ok((login.access_token, login.device_id))
+    }
+
+    /// Register a user through the substrate's C-S API (ADR 0037 `open`/`token` modes).
+    ///
+    /// nuck-server applies the registration *policy*; the substrate still performs the
+    /// account creation. The `m.login.dummy` two-step flow is completed here. Returns
+    /// `(user_id, access_token, device_id)`.
+    pub async fn register(&self, username: &str, password: &str) -> Result<(String, String, String)> {
+        let path = "/_matrix/client/v3/register";
+        let first = serde_json::json!({ "username": username, "password": password });
+        let session = match self.register_step(path, first).await? {
+            RegisterStep::Done(success) => {
+                return Ok((success.user_id, success.access_token, success.device_id));
+            }
+            RegisterStep::Challenge(session) => session,
+        };
+        let body = serde_json::json!({
+            "username": username,
+            "password": password,
+            "auth": { "type": "m.login.dummy", "session": session },
+        });
+        match self.register_step(path, body).await? {
+            RegisterStep::Done(success) => Ok((success.user_id, success.access_token, success.device_id)),
+            RegisterStep::Challenge(_) => bail!("registration requires interactive authentication"),
+        }
+    }
+
+    /// One registration step: `Done` on success, `Challenge` when a session is required.
+    async fn register_step(&self, path: &str, body: serde_json::Value) -> Result<RegisterStep> {
+        let url = format!("{}{path}", self.base_url);
+        let response = self
+            .http
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("POST {url} failed"))?;
+        match response.status() {
+            status if status.is_success() => {
+                let success: RegisterSuccess =
+                    response.json().await.context("register returned an unexpected body")?;
+                Ok(RegisterStep::Done(success))
+            }
+            StatusCode::UNAUTHORIZED => {
+                let challenge: RegisterChallenge = response
+                    .json()
+                    .await
+                    .context("register challenge returned an unexpected body")?;
+                Ok(RegisterStep::Challenge(challenge.session))
+            }
+            status => {
+                let detail = response.text().await.unwrap_or_default();
+                bail!("register returned {status}: {detail}")
+            }
+        }
     }
 
     // --- Action-bot writes (ADR 0041) --------------------------------------

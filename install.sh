@@ -34,9 +34,15 @@ NUCK_PORT=$NUCK_PORT
 POSTGRES_PASSWORD=$POSTGRES_PASSWORD
 APPSERVICE_HS_TOKEN=$APPSERVICE_HS_TOKEN
 APPSERVICE_AS_TOKEN=$APPSERVICE_AS_TOKEN
-# Optional: a Tuwunel administrator access token. Only reconciliation (reading room
-# state periodically) needs it; the MVP runs without it.
+# Registration policy (ADR 0037): open | token | approval | closed.
+# `open` is fine for a private/localhost stack; choose `token` (with
+# NUCK_REGISTRATION_TOKEN) or `approval` before exposing it publicly.
+NUCK_REGISTRATION_MODE=open
+# Optional: a Tuwunel administrator access token. Needed for `approval`/`closed`
+# registration and for reconciliation (reading room state periodically).
 # TUWUNEL_ADMIN_TOKEN=
+# Optional: comma-separated operator admin user ids (gates the approval queue).
+# NUCK_ADMIN_USERS=@admin:$SERVER_NAME
 EOF
 chmod 600 .env
 

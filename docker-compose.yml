@@ -43,9 +43,14 @@ services:
       NUCK_SERVER_NAME: ${NUCK_SERVER_NAME:?run ./install.sh first}
       DATABASE_URL: postgres://nuck:${POSTGRES_PASSWORD}@postgres:5432/nuck
       TUWUNEL_URL: http://tuwunel:6167
-      # Optional: a Tuwunel administrator access token. Only reconciliation needs it;
-      # the action bot writes with the AppService token, so the MVP runs without it.
+      # Optional: a Tuwunel administrator access token. Needed for `approval`/`closed`
+      # registration and for reconciliation; `open`/`token` registration does not need it.
       TUWUNEL_ADMIN_TOKEN: ${TUWUNEL_ADMIN_TOKEN:-}
+
+      # Registration policy (ADR 0037).
+      NUCK_REGISTRATION_MODE: ${NUCK_REGISTRATION_MODE:-token}
+      NUCK_REGISTRATION_TOKEN: ${NUCK_REGISTRATION_TOKEN:-}
+      NUCK_ADMIN_USERS: ${NUCK_ADMIN_USERS:-}
 
       APPSERVICE_ID: nuck-projector
       APPSERVICE_HS_TOKEN: ${APPSERVICE_HS_TOKEN:?run ./install.sh first}

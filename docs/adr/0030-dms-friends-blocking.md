@@ -45,3 +45,12 @@ is **stored and federated**, merely withheld from `/sync`, and surfaces on un-ig
 "only affects the local client's rendering" was slightly off — it is server-side
 `/sync` filtering — but the conclusion is unchanged and now certain.)
 
+## Implementation note (2026-10-22) — superseded by [ADR 0044](./0044-v1-friends-storage.md)
+
+For the single-server v1, friend and block state is held in the **projection** rather
+than per-user account data: writing the *counterpart's* account data would require
+admin login-as, and v1 already commits to a server-side index. The account-data mirror
+(and the `m.ignored_user_list` mirror) is deferred with federation. DM rooms remain
+plain Matrix direct rooms, as decided above. See ADR 0044.
+
+

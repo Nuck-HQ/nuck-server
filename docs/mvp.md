@@ -70,3 +70,12 @@ Services: `postgres` (index), `tuwunel` (substrate, internal only), `nuck-server
 The full roadmap remains in `docs/open-questions.md` and the ADRs. The permission
 model (roles, overrides, bans, ownership, membership) is implemented beyond what the MVP
 exercises.
+
+## Beyond the MVP — the client-ready v1 surface (2026-10-22)
+
+The MVP above (guilds, channels, messages, permissions) has since grown into the full
+single-server v1 surface a client needs: guild/channel/role/member management (with
+delete), invites & joining, registration policy, DMs, friends, blocking, and the audit
+log. See [`protocol/api.md`](./protocol/api.md) (final) and `scripts/smoke.sh` (which now
+covers register → guild → invite/redeem → moderation → DM). Still deferred: federation,
+voice, bots, search, directory, and reports.

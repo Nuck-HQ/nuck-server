@@ -69,6 +69,21 @@ AppService delivery, and push **confirmed**; admin API, MatrixRTC, and blocklist
   [`protocol/events.md`](./protocol/events.md): concrete content schemas, the role-ID
   scheme, and registry ownership (the crate is canonical, test-enforced).
 
+## Resolved: v1 client surface (2026-10-22)
+
+The draft `/_nuck/v1` inventory and its open issues are decided and implemented (ADR
+0042 follow-on work):
+
+- **Endpoint schemas / error model / pagination / idempotency / impersonation** —
+  finalized in [`protocol/api.md`](./protocol/api.md); DTOs live in `nuck-protocol`.
+- **State removal** — empty-content encoding (ADR 0043).
+- **Friends & blocking storage for v1** — the projection, not account data (ADR 0044);
+  the account-data + ignore-list mirror is deferred with federation.
+- **Registration** — enforced at `/_nuck/v1/register` (ADR 0037); the substrate's own
+  `/register` is closed off. `approval` needs `TUWUNEL_ADMIN_TOKEN`.
+- **Reports** — still deferred (ADR 0016); bans, kick, and the audit log are in.
+- **Search, directory, voice, bots, federation** — still deferred.
+
 ## Rejected
 
 - Nuck-owned accounts separate from Matrix identity. (ADR 0009)

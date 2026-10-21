@@ -65,6 +65,18 @@ LiveKit SFU. The whole stack ships as a multi-container, one-command install.
 | [0040](./docs/adr/0040-scalar-power-level-limitation.md) | **Finding:** a scalar power level cannot mirror an arbitrary permission set (superseded by 0041) |
 | [0041](./docs/adr/0041-bot-mediated-privileged-actions.md) | Bot-mediated privileged actions; power levels used only coarsely |
 | [0042](./docs/adr/0042-protocol-specification-artifacts.md) | Protocol spec finalized: permission table, event registry, role IDs |
+| [0043](./docs/adr/0043-state-removal-empty-content.md) | State removal: empty-content encoding (no Matrix state deletion) |
+| [0044](./docs/adr/0044-v1-friends-storage.md) | v1 friends & blocking held in the projection (single server) |
+
+## Status
+
+The deployable MVP (below) is met, and the **client-ready v1 surface** is implemented:
+guilds, channels, roles, members, bans, per-channel overrides, invites & joining,
+registration policy, DMs, friends, blocking, and the audit log — all under `/_nuck/v1`
+plus the proxied Matrix C-S API. Deferred: federation, voice, bots, search, directory,
+and reports.
+
+- [`docs/protocol/api.md`](./docs/protocol/api.md) — the v1 endpoint inventory (final).
 
 ## Building it
 

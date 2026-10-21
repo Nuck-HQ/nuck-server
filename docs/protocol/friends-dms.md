@@ -22,26 +22,29 @@ for v1, whose scope is a **single server**.
 |---|---|---|---|
 | DM room | Matrix room with `m.direct` account data (`is_direct`) | yes (federation) | the room (substrate) |
 | DM messages | Matrix events, **E2EE** (`m.room.encrypted`) | yes | the room |
-| Friend list | account data `space.nuck.friends.v1` on the user's home server | no | own server |
-| Friend request | to-device `space.nuck.friend_request.v1` / `…friend_response.v1`, **plus a local pending row** (see below) | (to-device) | own server |
-| Block list | account data `space.nuck.blocks.v1` on the user's home server, mirrored to `m.ignored_user_list` | no | own server |
+| Friend list | projection table `friendships` (v1; see ADR 0044) | no | own server |
+| Friend request | projection table `friend_requests` **plus** to-device `space.nuck.friend_request.v1` / `…friend_response.v1` | (to-device) | own server |
+| Block list | projection table `blocks` (v1; see ADR 0044) | no | own server |
+
+**Implementation note (ADR 0044).** v1 is single-server, and writing the *counterpart's*
+list on accept requires admin login-as, so friend/block/request state is held in the
+projection rather than account data. The to-device events are still sent (so the
+mechanism federates later); the account-data + `m.ignored_user_list` mirror is deferred.
+
 
 **Decisions:**
 
 1. **DM messages are never indexed.** E2EE means the server holds no plaintext; the
    projection only ever indexes plaintext guild channels (ADR 0008/0019). DM content is
    invisible to search by construction.
-2. **`space.nuck.blocks.v1` is a new account-data type.** It must be added to the
-   account-data table in `events.md` and to the `nuck-protocol` crate. Its payload is an
-   array of blocked user ids. We **additionally** mirror blocks into the standard
-   `m.ignored_user_list`, so the substrate's own `/sync` filtering (ADR 0030 verification)
-   is a second line of defence.
-3. **A local pending-request row.** Because the substrate does not let nuck-server read a
-   user's to-device inbox, `POST /friends/requests` both **sends the to-device event** and
-   **records a pending row** (from, to, state, created_at) in the projection. This is what
-   `GET /friends/requests` reads. In v1 (single server) the two users share a server, so
-   the row is authoritative. When federation lands, the remote side additionally surfaces
-   the to-device event to its own client, and a `[S2S]` notification reconciles the row.
+2. **Friend and block state is a projection table in v1** (`friendships`, `blocks`),
+   per ADR 0044. The account-data types (`space.nuck.friends.v1`, `space.nuck.blocks.v1`)
+   and the `m.ignored_user_list` mirror are deferred with federation.
+3. **A pending-request row.** `POST /friends/requests` both **sends the to-device event**
+   and **records a pending row** (`friend_requests`) that `GET /friends/requests` reads.
+   In v1 (single server) the two users share a server, so the row is authoritative; when
+   federation lands, the remote side surfaces the to-device event and a `[S2S]`
+   notification reconciles the row.
 
 ## Endpoints & semantics
 
@@ -97,11 +100,9 @@ for v1, whose scope is a **single server**.
 Blocking is best-effort and local, so enforcement is at every boundary nuck-server brokers:
 
 1. **`POST /dm`** refuses when either side is blocked (authoritative for new DMs).
-2. **The `/sync` proxy post-filters** the response, dropping `space.nuck.friend_request.v1`
-   to-device events and DM invites originating from users the caller has blocked. This
-   mirrors the substrate's own ignore-list filtering and is the reason we also mirror into
-   `m.ignored_user_list` — but we do **not** rely on the substrate alone (ADR 0030
-   verification: it is sync-time filtering, not enforcement).
+2. **The `/sync` proxy post-filter is deferred** (ADR 0044). v1 enforces blocking at the
+   API boundary (1 and 3); a blocked user's already-delivered events remain, which is
+   acceptable because blocking is not a security boundary (ADR 0030).
 3. **`POST /friends/requests`** refuses when either side is blocked.
 
 An already-stored invite or message from a now-blocked user is **not** retroactively

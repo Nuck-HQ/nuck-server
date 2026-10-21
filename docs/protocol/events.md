@@ -25,6 +25,17 @@ the registry test, and a row here.
   mutates an existing one. Additive changes keep the type and rely on tolerant parsing.
 - Unknown fields are ignored; a field added later must be optional.
 
+## Removal (no state deletion)
+
+Matrix has no state deletion, so Nuck encodes **removal** as a state event whose content
+is an **empty object** — the shape a redaction produces, and the same convention
+`m.room.member` already relies on (a redacted member event is ignored, not rejected;
+see `projection::ingest`). A non-empty but malformed content is still an error.
+
+This applies to the guild-level types `guild`, `role`, `member`, `channel`, `invite`,
+`ban`, and `join_request`. **Overrides keep their own convention** — removal writes an
+all-zero override (ADR 0020), which resolves identically to no override.
+
 ## ID schemes
 
 - **Role ID** — the reserved base role is `everyone` (its *display name* is

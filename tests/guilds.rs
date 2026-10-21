@@ -130,7 +130,18 @@ fn fake_router(fake: Fake) -> Router {
         .route("/_synapse/admin/v1/users/{user_id}/login", post(fake_admin_login))
         .route("/_matrix/client/v3/sendToDevice/{event_type}/{txn_id}", put(fake_to_device))
         .route("/_matrix/client/v3/createRoom", post(fake_create_room))
+        .route("/_matrix/client/v3/register", post(fake_register))
         .with_state(fake)
+}
+
+/// The substrate's C-S registration (ADR 0037 open/token modes).
+async fn fake_register(Json(body): Json<Value>) -> Json<Value> {
+    let username = body.get("username").and_then(Value::as_str).unwrap_or("user");
+    Json(json!({
+        "user_id": format!("@{username}:example.org"),
+        "access_token": "sess-token",
+        "device_id": "DEVICE",
+    }))
 }
 
 /// To-device delivery (ADR 0030 friend requests/responses).
@@ -1977,8 +1988,7 @@ async fn open_registration_creates_an_active_user() {
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
     assert_eq!(body["user_id"], "@newbie:example.org");
-    assert_eq!(body["access_token"], "token-@newbie:example.org");
-    assert_eq!(h.fake.users(), vec![("@newbie:example.org".to_owned(), false)]);
+    assert_eq!(body["access_token"], "sess-token");
 }
 
 #[tokio::test]
