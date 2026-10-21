@@ -956,8 +956,8 @@ dependencies = [
 
 [[package]]
 name = "nuck-protocol"
-version = "0.1.0"
-source = "git+https://github.com/nuck-hq/nuck-protocol.git?tag=v0.1.0#4c6b1903c0d0905e715648a39586759247aa1549"
+version = "0.2.0"
+source = "git+https://github.com/nuck-hq/nuck-protocol.git?tag=v0.2.0#ef791c0e96422f83864cfe487291db3ad3741d94"
 dependencies = [
  "ruma",
  "serde",

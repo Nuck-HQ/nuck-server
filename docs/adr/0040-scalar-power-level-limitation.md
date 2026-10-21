@@ -21,7 +21,7 @@ set.** The substrate compares one number per member against per-action threshold
 the set of actions it permits is always a *prefix* of the action order. Discord-style
 permission sets are arbitrary, not prefixes.
 
-Empirically ([nuck-protocol's `mirror_invariant` test](https://github.com/nuck-hq/nuck-protocol/blob/v0.1.0/tests/mirror_invariant.rs), 200k random sets):
+Empirically ([nuck-protocol's `mirror_invariant` test](https://github.com/nuck-hq/nuck-protocol/blob/v0.2.0/tests/mirror_invariant.rs), 200k random sets):
 
 - The substrate **never under-grants** — it never denies something the engine grants.
   Functionality is preserved.
