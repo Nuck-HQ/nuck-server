@@ -244,3 +244,23 @@ are not.
 which the projection decodes back to the real user id. Role ids and `everyone` are
 unaffected. The fake substrate used by the unit tests does not enforce the rule, so this
 was only visible end to end — `scripts/smoke.sh` now exercises it.
+
+## Admin & credentials — the token is not needed (2026-10-22)
+
+Tuwunel grants the **first user** the server-admin badge automatically
+(`grant_admin_to_first_user = true`, default) and creates an admin room
+(`create_admin_room = true`). There is **no config value** for an "admin token": the
+admin API authenticates with an ordinary user's session token, which is why an installer
+cannot mint one.
+
+Verified live: a normal user's token gets **403** from `/_synapse/admin/v1/rooms`
+(only the actual first account is admin), and **no admin token is required** for any of
+nuck-server's jobs when it reads as the projector:
+
+- **Reconciliation** read resolved room state/history as the projector (a member) over
+  the C-S API and discovered rooms via its `GET /joined_rooms` — a full pass completed
+  with `rooms=35, ops=214, failures=0` and no admin credential.
+- **Registration** uses the ordinary C-S `/register`; `approval` holds the account by
+  refusing its `/login`, so no admin API and no deactivation are involved.
+
+See [ADR 0046](../adr/0046-no-stored-admin-token.md).

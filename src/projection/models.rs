@@ -143,6 +143,8 @@ pub struct RegistrationRequestRow {
     pub username: String,
     pub user_id: String,
     pub created_at: i64,
+    /// `pending` or `denied`. A denied row leaves the queue but still blocks login.
+    pub status: String,
 }
 
 /// An append-only audit entry (ADR 0016).

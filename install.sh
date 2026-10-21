@@ -38,10 +38,9 @@ APPSERVICE_AS_TOKEN=$APPSERVICE_AS_TOKEN
 # `open` is fine for a private/localhost stack; choose `token` (with
 # NUCK_REGISTRATION_TOKEN) or `approval` before exposing it publicly.
 NUCK_REGISTRATION_MODE=open
-# Optional: a Tuwunel administrator access token. Needed for `approval`/`closed`
-# registration and for reconciliation (reading room state periodically).
-# TUWUNEL_ADMIN_TOKEN=
-# Optional: comma-separated operator admin user ids (gates the approval queue).
+# Optional: comma-separated operator admin user ids (gate the approval queue).
+# `approval` mode works with no Tuwunel admin token: nuck-server holds the sign-up
+# and blocks its login until an admin approves.
 # NUCK_ADMIN_USERS=@admin:$SERVER_NAME
 EOF
 chmod 600 .env

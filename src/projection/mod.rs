@@ -549,8 +549,8 @@ impl Projection {
     /// Record a pending registration request (ADR 0037).
     pub async fn insert_registration_request(&self, r: &RegistrationRequestRow) -> Result<()> {
         sqlx::query(
-            "INSERT INTO registration_requests (id, username, user_id, created_at)
-             VALUES ($1, $2, $3, $4)",
+            "INSERT INTO registration_requests (id, username, user_id, created_at, status)
+             VALUES ($1, $2, $3, $4, 'pending')",
         )
         .bind(&r.id)
         .bind(&r.username)
@@ -561,10 +561,11 @@ impl Projection {
         Ok(())
     }
 
-    /// Pending registration requests, oldest first (ADR 0037).
+    /// Pending (`status = 'pending'`) registration requests, oldest first (ADR 0037).
     pub async fn list_registration_requests(&self) -> Result<Vec<RegistrationRequestRow>> {
         let rows = sqlx::query_as::<_, RegistrationRequestRow>(
-            "SELECT id, username, user_id, created_at FROM registration_requests
+            "SELECT id, username, user_id, created_at, status FROM registration_requests
+             WHERE status = 'pending'
              ORDER BY created_at ASC, id ASC",
         )
         .fetch_all(&self.pool)
@@ -578,7 +579,8 @@ impl Projection {
         id: &str,
     ) -> Result<Option<RegistrationRequestRow>> {
         let row = sqlx::query_as::<_, RegistrationRequestRow>(
-            "SELECT id, username, user_id, created_at FROM registration_requests WHERE id = $1",
+            "SELECT id, username, user_id, created_at, status FROM registration_requests
+             WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -586,13 +588,34 @@ impl Projection {
         Ok(row)
     }
 
-    /// Delete a registration request (approved or denied).
+    /// Delete a registration request (approval — lifts the login block).
     pub async fn delete_registration_request(&self, id: &str) -> Result<()> {
         sqlx::query("DELETE FROM registration_requests WHERE id = $1")
             .bind(id)
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Mark a registration request denied (leaves the queue, keeps the login block).
+    pub async fn deny_registration_request(&self, id: &str) -> Result<()> {
+        sqlx::query("UPDATE registration_requests SET status = 'denied' WHERE id = $1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Whether a user is held back from login by an unresolved registration request
+    /// (`approval` mode, ADR 0046).
+    pub async fn registration_blocked(&self, user_id: &str) -> Result<bool> {
+        let row: (bool,) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM registration_requests WHERE user_id = $1)",
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row.0)
     }
 
     // --- Friends & blocking (ADR 0030) -------------------------------------

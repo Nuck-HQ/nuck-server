@@ -71,24 +71,27 @@ pub fn state_ops(state: &[RawEvent]) -> (Vec<ProjectionOp>, Vec<String>, bool) {
 pub struct Reconciler {
     projection: Projection,
     substrate: SubstrateClient,
-    /// The projector user to keep joined to every guild room (ADR 0019), if known.
-    projector_user: Option<String>,
+    /// `(AppService token, projector user)` — the identity that reads room state and
+    /// joins guilds. The projector is a normal member of every guild room, so no admin
+    /// privilege is needed (ADR 0046).
+    projector: Option<(String, String)>,
     interval: Duration,
     /// Messages fetched per channel during a backfill; `None` disables backfill.
     backfill_limit: Option<u32>,
 }
 
 impl Reconciler {
-    /// Build a reconciler. `backfill_limit` bounds the per-channel message backfill.
+    /// Build a reconciler. `projector` is the `(AppService token, projector user)` pair;
+    /// `backfill_limit` bounds the per-channel message backfill.
     #[must_use]
     pub fn new(
         projection: Projection,
         substrate: SubstrateClient,
-        projector_user: Option<String>,
+        projector: Option<(String, String)>,
         interval: Duration,
         backfill_limit: Option<u32>,
     ) -> Self {
-        Self { projection, substrate, projector_user, interval, backfill_limit }
+        Self { projection, substrate, projector, interval, backfill_limit }
     }
 
     /// Run one reconciliation pass: every known guild, then every known channel.
@@ -99,17 +102,19 @@ impl Reconciler {
         let mut report = ReconcileReport::default();
 
         let mut guilds = self.projection.guild_ids().await?;
-        match self.substrate.guild_rooms().await {
-            Ok(discovered) => {
-                for room in discovered {
-                    if !guilds.contains(&room) {
-                        guilds.push(room);
+        if let Some((token, user)) = &self.projector {
+            match self.substrate.joined_rooms(token, Some(user)).await {
+                Ok(discovered) => {
+                    for room in discovered {
+                        if !guilds.contains(&room) {
+                            guilds.push(room);
+                        }
                     }
                 }
+                Err(e) => tracing::warn!(
+                    "room discovery failed; reconciling only rooms already projected: {e}"
+                ),
             }
-            Err(e) => tracing::warn!(
-                "room discovery failed; reconciling only rooms already projected: {e}"
-            ),
         }
 
         for room in &guilds {
@@ -145,7 +150,10 @@ impl Reconciler {
     /// joined, and (optionally) backfill messages. Returns `(ops applied, messages
     /// backfilled)`.
     pub async fn reconcile_room(&self, room_id: &str, backfill: bool) -> Result<(usize, usize)> {
-        let state = self.substrate.room_state(room_id).await?;
+        let Some((token, user)) = &self.projector else {
+            anyhow::bail!("no projector identity configured; cannot read room state");
+        };
+        let state = self.substrate.room_state_as(token, Some(user), room_id).await?;
         let (ops, event_ids, is_guild) = state_ops(&state);
 
         let applied = self.projection.reconcile_room(room_id, &ops, &event_ids).await?;
@@ -153,10 +161,8 @@ impl Reconciler {
         // ADR 0019: the projector must be in every guild room to receive federated
         // events. Joining is best-effort — a failure is logged, never fatal.
         if is_guild {
-            if let Some(user) = &self.projector_user {
-                if let Err(e) = self.substrate.join_user(room_id, user).await {
-                    tracing::warn!(room = %room_id, user = %user, "projector auto-join failed: {e}");
-                }
+            if let Err(e) = self.substrate.join_room(token, Some(user), room_id).await {
+                tracing::warn!(room = %room_id, user = %user, "projector auto-join failed: {e}");
             }
         }
 
@@ -173,7 +179,11 @@ impl Reconciler {
 
     /// Index the most recent timeline events of a channel room (ADR 0029).
     async fn backfill_messages(&self, room_id: &str, limit: u32) -> usize {
-        let messages = match self.substrate.room_messages(room_id, limit).await {
+        let Some((token, user)) = &self.projector else {
+            return 0;
+        };
+        let messages = match self.substrate.room_messages_as(token, Some(user), room_id, limit).await
+        {
             Ok(messages) => messages,
             Err(e) => {
                 tracing::warn!(room = %room_id, "message backfill failed: {e}");

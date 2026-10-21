@@ -58,8 +58,8 @@ Services: `postgres` (index), `tuwunel` (substrate, internal only), `nuck-server
 - **Pre-join state is backfilled.** AppService push only starts when the projector
   joins, so state written earlier (the `m.room.create` that establishes ownership, the
   creator's membership) is read from the C-S API **as the projector** and reconciled
-  into the projection. This complements the admin-token reconciliation loop, which is
-  still off without `TUWUNEL_ADMIN_TOKEN`.
+  into the projection. This complements the periodic reconciliation loop, which reads as
+  the projector too and is **on by default** (ADR 0046 — no admin token).
 - **Local room ids omit `:server`** in Tuwunel, so the guild home server is empty for
   local guilds and is treated as "this server".
 - **Channel creation requires `MANAGE_CHANNELS`**; guilds are created by the user (who

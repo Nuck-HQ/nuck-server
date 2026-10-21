@@ -56,7 +56,6 @@ fn app_with(projection: Projection) -> Router {
         server_name: "example.org".to_owned(),
         database_url: None,
         tuwunel_url: "http://localhost:8008".to_owned(),
-        tuwunel_admin_token: None,
         appservice_hs_token: None,
         appservice_user: None,
         appservice_as_token: None,
@@ -403,7 +402,6 @@ fn reconcile_config() -> Config {
         server_name: "example.org".to_owned(),
         database_url: None,
         tuwunel_url: "http://127.0.0.1:1".to_owned(),
-        tuwunel_admin_token: Some("admin".to_owned()),
         appservice_hs_token: None,
         appservice_user: Some("@nuck-projector:example.org".to_owned()),
         appservice_as_token: None,
@@ -710,7 +708,7 @@ async fn reconciliation_survives_a_substrate_outage() {
     let reconciler = Reconciler::new(
         p.clone(),
         SubstrateClient::from_config(&reconcile_config()),
-        Some("@nuck-projector:example.org".to_owned()),
+        Some(("as-token".to_owned(), "@nuck-projector:example.org".to_owned())),
         Duration::from_secs(300),
         None,
     );

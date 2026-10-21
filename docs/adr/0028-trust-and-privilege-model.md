@@ -62,3 +62,12 @@ which tightens the privilege model. Caveat: that endpoint and several user endpo
 are **not served when MAS is active**; we do not use MAS, but this forecloses adopting
 it later without a rethink. There is **no backup HTTP endpoint** (see ADR 0034).
 
+## Update (2026-10-22) — the admin token is no longer held
+
+**Superseded for the default deployment by [ADR 0046](./0046-no-stored-admin-token.md):**
+nuck-server holds **no** Tuwunel admin token. The projector reads room state as a normal
+member, and registration is enforced without the admin API. The admin API remains
+available and documented above, but only a future, feature-scoped decision (unredacted
+reads, retention, bulk redaction) should reintroduce a credential.
+
+

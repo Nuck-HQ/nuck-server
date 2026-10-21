@@ -143,12 +143,14 @@ know. A feature that is deferred is **absent** — the current build's aspiratio
 - `RegisterPolicy { mode: "open"|"token"|"approval"|"closed", token_required: bool, email_required: bool, captcha: bool }`. `captcha` is always `false` (Tuwunel has no
   CAPTCHA; ADR 0037 verification). The client uses this to render the form.
 - `POST /register` applies the policy. `open`/`token` create the user immediately
-  (via `PUT /_synapse/admin/v2/users/{id}`) and return a session; `token` requires the
-  request's `token`. `approval` returns **202** with a pending `request_id` (no session).
-  `closed` → `403 M_FORBIDDEN`. Honors email verification when the substrate requires it.
+  (via the substrate's C-S registration) and return a session; `token` requires the
+  request's `token`. `approval` returns **202** with a pending `request_id` and **holds
+  the account**: it is created, but its `POST /login` is refused until an admin approves
+  (ADR 0046). `closed` → `403 M_FORBIDDEN`. Honors email verification when the substrate
+  requires it.
 - **The proxied substrate `POST /_matrix/client/*/register` is disabled** (`403
   M_FORBIDDEN`) so registration cannot bypass policy. Login and all other C-S verbs pass
-  through.
+  through (except a pending `approval` user's login, which is refused).
 
 ## Guilds (ADR 0005/0006)
 

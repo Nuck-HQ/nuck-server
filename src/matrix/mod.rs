@@ -23,11 +23,6 @@ use serde::Deserialize;
 
 use crate::config::Config;
 
-/// Page size for the admin room listing.
-const ROOM_PAGE_LIMIT: u32 = 100;
-/// Hard cap on discovery pages, so a runaway listing cannot stall reconciliation.
-const ROOM_MAX_PAGES: u32 = 50;
-
 /// A raw Matrix event as delivered by the AppService push or the admin API.
 ///
 /// Deliberately loose: the projection maps it tolerantly (ADR 0014). This is the
@@ -55,31 +50,18 @@ impl RawEvent {
     }
 }
 
-/// A room summary from `GET /_synapse/admin/v1/rooms` (discovery only).
-#[derive(Debug, Clone, Deserialize)]
-pub struct RoomSummary {
-    pub room_id: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    /// `m.space` for Nuck guilds (ADR 0005).
-    #[serde(default)]
-    pub room_type: Option<String>,
-    #[serde(default)]
-    pub joined_members: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RoomsPage {
-    #[serde(default)]
-    rooms: Vec<RoomSummary>,
-    #[serde(default)]
-    next_batch: Option<String>,
-}
-
+/// A page of a room's timeline (`GET /rooms/{id}/messages`).
 #[derive(Debug, Deserialize)]
 struct MessagesPage {
     #[serde(default)]
     chunk: Vec<RawEvent>,
+}
+
+/// The rooms a user has joined (`GET /joined_rooms`).
+#[derive(Debug, Deserialize)]
+struct JoinedRooms {
+    #[serde(default)]
+    joined_rooms: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -104,14 +86,6 @@ struct ProfileBody {
     displayname: Option<String>,
     #[serde(default)]
     avatar_url: Option<String>,
-}
-
-/// The result of an admin login-as (ADR 0028).
-#[derive(Debug, Deserialize)]
-struct LoginAs {
-    access_token: String,
-    #[serde(default)]
-    device_id: String,
 }
 
 /// A successful C-S registration (ADR 0037 `open`/`token` modes).
@@ -158,8 +132,6 @@ struct ClientStateEvent {
 pub struct SubstrateClient {
     http: Client,
     base_url: String,
-    /// Admin token for the narrow privileged operations (ADR 0028), if configured.
-    admin_token: Option<String>,
 }
 
 impl SubstrateClient {
@@ -173,17 +145,7 @@ impl SubstrateClient {
             .timeout(Duration::from_secs(60))
             .build()
             .unwrap_or_else(|_| Client::new());
-        Self {
-            http,
-            base_url: config.tuwunel_url.trim_end_matches('/').to_owned(),
-            admin_token: config.tuwunel_admin_token.clone(),
-        }
-    }
-
-    /// Whether the admin API is usable (an admin token is configured).
-    #[must_use]
-    pub fn admin_available(&self) -> bool {
-        self.admin_token.is_some()
+        Self { http, base_url: config.tuwunel_url.trim_end_matches('/').to_owned() }
     }
 
     /// The base URL of the substrate (for diagnostics).
@@ -256,100 +218,41 @@ impl SubstrateClient {
         self.call_optional(Method::GET, &path, token).await
     }
 
-    // --- Admin reads (ADR 0019) --------------------------------------------
+    // --- Projector reads (ADR 0019) ----------------------------------------
 
-    /// A room's **full current state** with the admin visibility bypass.
+    /// A page of a room's timeline, read **as a member** (the projector), newest first.
     ///
-    /// The reconciliation input (ADR 0019): authoritative resolved state, so we never
-    /// re-run state resolution ourselves.
-    pub async fn room_state(&self, room_id: &str) -> Result<Vec<RawEvent>> {
-        let path = format!("/_synapse/admin/v1/rooms/{}/state", encode_path(room_id));
-        self.admin::<Vec<RawEvent>>(Method::GET, &path, None).await
-    }
-
-    /// A page of a room's timeline with the admin visibility bypass, newest first.
-    pub async fn room_messages(&self, room_id: &str, limit: u32) -> Result<Vec<RawEvent>> {
-        let path = format!(
-            "/_synapse/admin/v1/rooms/{}/messages?dir=b&limit={}",
+    /// Reconciliation backfill (ADR 0029): the projector is joined to every guild room,
+    /// so it reads the room's history without any admin privilege.
+    pub async fn room_messages_as(
+        &self,
+        token: &str,
+        user_id: Option<&str>,
+        room_id: &str,
+        limit: u32,
+    ) -> Result<Vec<RawEvent>> {
+        let mut path = format!(
+            "/_matrix/client/v3/rooms/{}/messages?dir=b&limit={}",
             encode_path(room_id),
             limit
         );
-        let page: MessagesPage = self.admin(Method::GET, &path, None).await?;
+        if let Some(user_id) = user_id {
+            path.push_str("&user_id=");
+            path.push_str(&encode_query(user_id));
+        }
+        let page: MessagesPage = self.call(Method::GET, &path, token, None).await?;
         Ok(page.chunk)
     }
 
-    /// Every room the substrate knows about, following pagination (bounded).
+    /// The rooms a user has joined, read **as that user** (projector discovery).
     ///
-    /// Used only for discovery on a cold start; the projection is authoritative after
-    /// that.
-    pub async fn rooms(&self) -> Result<Vec<RoomSummary>> {
-        let mut all = Vec::new();
-        let mut from: Option<String> = None;
-        for _ in 0..ROOM_MAX_PAGES {
-            let mut path = format!("/_synapse/admin/v1/rooms?limit={ROOM_PAGE_LIMIT}");
-            if let Some(token) = &from {
-                path.push_str("&from=");
-                path.push_str(&encode_query(token));
-            }
-            let page: RoomsPage = self.admin(Method::GET, &path, None).await?;
-            all.extend(page.rooms);
-            match page.next_batch {
-                Some(next) if !next.is_empty() => from = Some(next),
-                _ => return Ok(all),
-            }
-        }
-        tracing::warn!("room discovery hit the page cap; some rooms may be missed this pass");
-        Ok(all)
-    }
-
-    /// The discovered **guild** rooms (`m.space`), for reconciliation seeding.
-    pub async fn guild_rooms(&self) -> Result<Vec<String>> {
-        Ok(self
-            .rooms()
-            .await?
-            .into_iter()
-            .filter(|room| room.room_type.as_deref() == Some("m.space"))
-            .map(|room| room.room_id)
-            .collect())
-    }
-
-    /// Join a local user to a room as an administrator (ADR 0019 projector auto-join).
-    pub async fn join_user(&self, room_id: &str, user_id: &str) -> Result<()> {
-        let path = format!("/_synapse/admin/v1/join/{}", encode_path(room_id));
-        let body = serde_json::json!({ "user_id": user_id });
-        let _: serde_json::Value = self.admin(Method::POST, &path, Some(body)).await?;
-        Ok(())
-    }
-
-    /// Create or modify a user via the admin API (ADR 0028/0037).
-    ///
-    /// Registration is enforced by nuck-server (ADR 0037), so the substrate's own
-    /// registration is closed off (see the C-S proxy) and users are created here.
-    pub async fn admin_create_user(
-        &self,
-        user_id: &str,
-        password: &str,
-        deactivated: bool,
-    ) -> Result<()> {
-        let path = format!("/_synapse/admin/v2/users/{}", encode_path(user_id));
-        let body = serde_json::json!({ "password": password, "deactivated": deactivated });
-        let _: serde_json::Value = self.admin(Method::PUT, &path, Some(body)).await?;
-        Ok(())
-    }
-
-    /// Activate or deactivate an existing user (ADR 0037 approval fulfilment).
-    pub async fn admin_set_deactivated(&self, user_id: &str, deactivated: bool) -> Result<()> {
-        let path = format!("/_synapse/admin/v2/users/{}", encode_path(user_id));
-        let body = serde_json::json!({ "deactivated": deactivated });
-        let _: serde_json::Value = self.admin(Method::PUT, &path, Some(body)).await?;
-        Ok(())
-    }
-
-    /// Mint an access token for a user via the admin login-as endpoint (ADR 0028).
-    pub async fn admin_login(&self, user_id: &str) -> Result<(String, String)> {
-        let path = format!("/_synapse/admin/v1/users/{}/login", encode_path(user_id));
-        let login: LoginAs = self.admin(Method::POST, &path, Some(serde_json::json!({}))).await?;
-        Ok((login.access_token, login.device_id))
+    /// The projector is a member of every guild room (ADR 0019), so its joined rooms
+    /// are exactly the rooms worth reconciling — no admin room listing required.
+    pub async fn joined_rooms(&self, token: &str, user_id: Option<&str>) -> Result<Vec<String>> {
+        let mut path = "/_matrix/client/v3/joined_rooms".to_owned();
+        append_user_id(&mut path, user_id);
+        let body: JoinedRooms = self.call(Method::GET, &path, token, None).await?;
+        Ok(body.joined_rooms)
     }
 
     /// Register a user through the substrate's C-S API (ADR 0037 `open`/`token` modes).
@@ -551,20 +454,6 @@ impl SubstrateClient {
 
     // --- Plumbing ----------------------------------------------------------
 
-    /// Perform an admin-authenticated request.
-    async fn admin<T: serde::de::DeserializeOwned>(
-        &self,
-        method: Method,
-        path: &str,
-        body: Option<serde_json::Value>,
-    ) -> Result<T> {
-        let token = self
-            .admin_token
-            .as_deref()
-            .context("no Tuwunel admin token configured")?;
-        self.call(method, path, token, body).await
-    }
-
     /// Like [`Self::call`], but maps a 404 to `Ok(None)` instead of an error.
     async fn call_optional<T: serde::de::DeserializeOwned>(
         &self,
@@ -634,7 +523,6 @@ impl std::fmt::Debug for SubstrateClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SubstrateClient")
             .field("base_url", &self.base_url)
-            .field("admin", &self.admin_token.is_some())
             .finish()
     }
 }
@@ -702,10 +590,8 @@ mod tests {
     }
 
     #[test]
-    fn room_summary_tolerates_missing_fields() {
-        let summary: RoomSummary =
-            serde_json::from_value(serde_json::json!({ "room_id": "!r:example.org" })).unwrap();
-        assert_eq!(summary.room_id, "!r:example.org");
-        assert_eq!(summary.room_type, None);
+    fn joined_rooms_tolerates_a_missing_list() {
+        let body: JoinedRooms = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(body.joined_rooms.is_empty());
     }
 }

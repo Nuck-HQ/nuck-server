@@ -65,15 +65,17 @@ pub async fn register(
         RegistrationMode::Open | RegistrationMode::Approval => {}
     }
 
-    let approval = mode == RegistrationMode::Approval;
-    if approval {
-        // `approval`: create the account deactivated via the admin API (no plaintext
-        // password stored), and queue it.
-        state
-            .substrate
-            .admin_create_user(&user_id, &req.password, true)
-            .await
-            .map_err(|e| ApiErrorResponse::internal(e.to_string()))?;
+    // Every non-closed mode creates the account through the substrate's C-S
+    // registration; nuck-server applies the policy.
+    let (user_id, access_token, device_id) = state
+        .substrate
+        .register(username, &req.password)
+        .await
+        .map_err(|e| ApiErrorResponse::internal(e.to_string()))?;
+
+    if mode == RegistrationMode::Approval {
+        // Hold the account: it exists, but cannot log in until an admin approves (the
+        // login proxy refuses a pending user — ADR 0046). No password is stored.
         let id = uuid::Uuid::new_v4().to_string();
         privileged::projection(&state)?
             .insert_registration_request(&RegistrationRequestRow {
@@ -81,6 +83,7 @@ pub async fn register(
                 username: username.to_owned(),
                 user_id,
                 created_at: privileged::now_ms(),
+                status: "pending".to_owned(),
             })
             .await
             .map_err(privileged::internal)?;
@@ -91,12 +94,6 @@ pub async fn register(
             .into_response());
     }
 
-    // `open`/`token`: create the account through the substrate's C-S registration.
-    let (user_id, access_token, device_id) = state
-        .substrate
-        .register(username, &req.password)
-        .await
-        .map_err(|e| ApiErrorResponse::internal(e.to_string()))?;
     Ok(Json(RegisterResponse {
         user_id,
         access_token,
@@ -126,7 +123,8 @@ pub async fn list_requests(
     Ok(Json(RegisterRequestsResponse { items, next_cursor: None }))
 }
 
-/// `POST /_nuck/v1/register/requests/{id}/approve` — activate the account (ADR 0037).
+/// `POST /_nuck/v1/register/requests/{id}/approve` — allow the account to log in
+/// (ADR 0037/0046).
 pub async fn approve(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser { user_id: actor, .. }: AuthenticatedUser,
@@ -138,11 +136,7 @@ pub async fn approve(
         .await
         .map_err(privileged::internal)?
         .ok_or_else(|| ApiErrorResponse::not_found("no such registration request"))?;
-    state
-        .substrate
-        .admin_set_deactivated(&request.user_id, false)
-        .await
-        .map_err(|e| ApiErrorResponse::internal(e.to_string()))?;
+    // Removing the row lifts the login block.
     privileged::projection(&state)?
         .delete_registration_request(&id)
         .await
@@ -150,7 +144,7 @@ pub async fn approve(
     Ok(Json(RegisterDecisionResponse { user_id: Some(request.user_id) }))
 }
 
-/// `POST /_nuck/v1/register/requests/{id}/deny` — drop the request (ADR 0037).
+/// `POST /_nuck/v1/register/requests/{id}/deny` — keep the account blocked (ADR 0037/0046).
 pub async fn deny(
     State(state): State<Arc<AppState>>,
     AuthenticatedUser { user_id: actor, .. }: AuthenticatedUser,
@@ -162,9 +156,10 @@ pub async fn deny(
         .await
         .map_err(privileged::internal)?
         .ok_or_else(|| ApiErrorResponse::not_found("no such registration request"))?;
-    // The account stays deactivated; drop the queue entry.
+    // Keep the row, marked denied: it leaves the pending queue but the account stays
+    // blocked from login.
     privileged::projection(&state)?
-        .delete_registration_request(&id)
+        .deny_registration_request(&id)
         .await
         .map_err(privileged::internal)?;
     Ok(Json(RegisterDecisionResponse { user_id: None }))

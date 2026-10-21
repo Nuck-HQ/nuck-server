@@ -69,8 +69,6 @@ enum Recorded {
 struct Fake {
     tokens: HashMap<String, String>,
     writes: Arc<Mutex<Vec<Recorded>>>,
-    joins: Arc<Mutex<Vec<(String, String)>>>,
-    users: Arc<Mutex<Vec<(String, bool)>>>,
     to_device: Arc<Mutex<Vec<String>>>,
     next_event: Arc<AtomicU64>,
 }
@@ -84,8 +82,6 @@ impl Fake {
         Self {
             tokens,
             writes: Arc::new(Mutex::new(Vec::new())),
-            joins: Arc::new(Mutex::new(Vec::new())),
-            users: Arc::new(Mutex::new(Vec::new())),
             to_device: Arc::new(Mutex::new(Vec::new())),
             next_event: Arc::new(AtomicU64::new(1)),
         }
@@ -93,14 +89,6 @@ impl Fake {
 
     fn writes(&self) -> Vec<Recorded> {
         self.writes.lock().unwrap().clone()
-    }
-
-    fn joins(&self) -> Vec<(String, String)> {
-        self.joins.lock().unwrap().clone()
-    }
-
-    fn users(&self) -> Vec<(String, bool)> {
-        self.users.lock().unwrap().clone()
     }
 
     fn to_device(&self) -> Vec<String> {
@@ -125,13 +113,26 @@ fn fake_router(fake: Fake) -> Router {
             put(fake_send_state_singleton),
         )
         .route("/_matrix/client/v3/rooms/{room_id}/{action}", post(fake_membership))
-        .route("/_synapse/admin/v1/join/{room_id}", post(fake_admin_join))
-        .route("/_synapse/admin/v2/users/{user_id}", put(fake_admin_user))
-        .route("/_synapse/admin/v1/users/{user_id}/login", post(fake_admin_login))
         .route("/_matrix/client/v3/sendToDevice/{event_type}/{txn_id}", put(fake_to_device))
         .route("/_matrix/client/v3/createRoom", post(fake_create_room))
         .route("/_matrix/client/v3/register", post(fake_register))
+        .route("/_matrix/client/v3/login", post(fake_login))
         .with_state(fake)
+}
+
+/// The substrate's C-S login.
+async fn fake_login(Json(body): Json<Value>) -> Json<Value> {
+    let user = body
+        .get("identifier")
+        .and_then(|i| i.get("user"))
+        .and_then(Value::as_str)
+        .unwrap_or("user");
+    let user_id = if user.starts_with('@') { user.to_owned() } else { format!("@{user}:example.org") };
+    Json(json!({
+        "user_id": user_id,
+        "access_token": "login-token",
+        "device_id": "DEVICE",
+    }))
 }
 
 /// The substrate's C-S registration (ADR 0037 open/token modes).
@@ -157,36 +158,6 @@ async fn fake_to_device(
 /// Direct-room creation for `POST /_nuck/v1/dm`.
 async fn fake_create_room(Json(_body): Json<Value>) -> Json<Value> {
     Json(json!({ "room_id": "!dm:example.org" }))
-}
-
-/// Admin user create/modify (registration fulfilment, ADR 0037).
-async fn fake_admin_user(
-    State(fake): State<Fake>,
-    Path(user_id): Path<String>,
-    Json(body): Json<Value>,
-) -> Json<Value> {
-    let deactivated = body.get("deactivated").and_then(Value::as_bool).unwrap_or(false);
-    fake.users.lock().unwrap().push((user_id, deactivated));
-    Json(json!({}))
-}
-
-/// Admin login-as, returning a token for the created user (ADR 0028).
-async fn fake_admin_login(
-    State(_fake): State<Fake>,
-    Path(user_id): Path<String>,
-) -> Json<Value> {
-    Json(json!({ "access_token": format!("token-{user_id}"), "device_id": "DEVICE" }))
-}
-
-/// The admin force-join used by invite redemption / join approval (ADR 0011).
-async fn fake_admin_join(
-    State(fake): State<Fake>,
-    Path(room_id): Path<String>,
-    Json(body): Json<Value>,
-) -> Json<Value> {
-    let user_id = body.get("user_id").and_then(Value::as_str).unwrap_or_default().to_owned();
-    fake.joins.lock().unwrap().push((room_id, user_id));
-    Json(json!({}))
 }
 
 async fn fake_whoami(State(fake): State<Fake>, headers: HeaderMap) -> Response {
@@ -324,7 +295,6 @@ async fn setup_with(tweak: impl FnOnce(&mut Config)) -> Option<Harness> {
         server_name: SERVER.to_owned(),
         database_url: None,
         tuwunel_url: format!("http://{addr}"),
-        tuwunel_admin_token: Some("admin".to_owned()),
         appservice_hs_token: None,
         appservice_user: Some("@nuck-projector:example.org".to_owned()),
         appservice_as_token: Some(BOT_TOKEN.to_owned()),
@@ -1209,6 +1179,25 @@ async fn body_bytes(response: Response) -> Vec<u8> {
     axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap().to_vec()
 }
 
+/// Try a password login for `user`; the login proxy gates pending registrations.
+async fn login_status(h: &Harness, user: &str) -> StatusCode {
+    h.app
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/_matrix/client/v3/login",
+            None,
+            Some(json!({
+                "type": "m.login.password",
+                "identifier": { "type": "m.id.user", "user": user },
+                "password": "pw",
+            })),
+        ))
+        .await
+        .unwrap()
+        .status()
+}
+
 // --- Guild reads (ADR 0005/0013) -------------------------------------------
 
 #[tokio::test]
@@ -1809,7 +1798,7 @@ async fn preview_is_public_and_redeem_joins_the_caller() {
     assert_eq!(body["member_count"], 1);
     assert_eq!(body["join_mode"], "invite_only");
 
-    // Redeem force-joins the caller.
+    // Redeem invites the caller (bot invite; the client then accepts).
     let redeem = h
         .app
         .clone()
@@ -1823,8 +1812,9 @@ async fn preview_is_public_and_redeem_joins_the_caller() {
         .unwrap();
     assert_eq!(redeem.status(), StatusCode::OK);
     assert!(
-        h.fake.joins().contains(&(GUILD.to_owned(), OTHER.to_owned())),
-        "the redeemer is force-joined to the guild"
+        h.fake.writes().iter().any(|w| matches!(w, Recorded::Membership { kind, target, .. }
+            if kind == "invite" && target == OTHER)),
+        "the redeemer is invited to the guild"
     );
 }
 
@@ -1926,7 +1916,8 @@ async fn approving_a_join_request_force_joins_the_applicant() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(h.fake.joins().contains(&(GUILD.to_owned(), OTHER.to_owned())));
+    assert!(h.fake.writes().iter().any(|w| matches!(w, Recorded::Membership { kind, target, .. }
+        if kind == "invite" && target == OTHER)));
     assert!(h.fake.writes().iter().any(|w| matches!(w, Recorded::State { event_type, content, .. }
         if event_type == "space.nuck.join_request.v1" && content["status"] == "approved")));
 }
@@ -2050,10 +2041,11 @@ async fn approval_mode_queues_then_activates() {
     let body: Value = serde_json::from_slice(&body_bytes(pending).await).unwrap();
     let request_id = body["request_id"].as_str().unwrap().to_owned();
 
-    // Created deactivated (no password stored), and queued.
-    assert_eq!(h.fake.users(), vec![("@hopeful:example.org".to_owned(), true)]);
+    // The account exists but is held: queued, and blocked from login.
     let requests = h.projection.list_registration_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
+    assert!(h.projection.registration_blocked("@hopeful:example.org").await.unwrap());
+    assert_eq!(login_status(&h, "hopeful").await, StatusCode::FORBIDDEN);
 
     // A non-admin cannot read the queue.
     let refused = h
@@ -2087,7 +2079,8 @@ async fn approval_mode_queues_then_activates() {
         .await
         .unwrap();
     assert_eq!(approve.status(), StatusCode::OK);
-    assert_eq!(h.fake.users().last().unwrap(), &("@hopeful:example.org".to_owned(), false));
+    assert!(!h.projection.registration_blocked("@hopeful:example.org").await.unwrap());
+    assert_eq!(login_status(&h, "hopeful").await, StatusCode::OK);
     assert!(h.projection.list_registration_requests().await.unwrap().is_empty());
 }
 

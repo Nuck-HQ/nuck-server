@@ -43,9 +43,6 @@ services:
       NUCK_SERVER_NAME: ${NUCK_SERVER_NAME:?run ./install.sh first}
       DATABASE_URL: postgres://nuck:${POSTGRES_PASSWORD}@postgres:5432/nuck
       TUWUNEL_URL: http://tuwunel:6167
-      # Optional: a Tuwunel administrator access token. Needed for `approval`/`closed`
-      # registration and for reconciliation; `open`/`token` registration does not need it.
-      TUWUNEL_ADMIN_TOKEN: ${TUWUNEL_ADMIN_TOKEN:-}
 
       # Registration policy (ADR 0037).
       NUCK_REGISTRATION_MODE: ${NUCK_REGISTRATION_MODE:-token}

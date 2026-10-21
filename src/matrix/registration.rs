@@ -211,7 +211,6 @@ mod tests {
             server_name: "example.com".to_owned(),
             database_url: None,
             tuwunel_url: "http://localhost:8008".to_owned(),
-            tuwunel_admin_token: None,
             appservice_hs_token: Some("hs-secret".to_owned()),
             appservice_user: Some("@nuck-projector:example.com".to_owned()),
             appservice_as_token: Some("as-secret".to_owned()),

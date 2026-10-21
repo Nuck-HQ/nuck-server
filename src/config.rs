@@ -26,9 +26,6 @@ pub struct Config {
     pub database_url: Option<String>,
     /// Base URL of the local Tuwunel instance. Never internet-facing (ADR 0028).
     pub tuwunel_url: String,
-    /// Tuwunel admin token, used only for the narrow privileged operations
-    /// (ADR 0028). Optional so the server can start without it in development.
-    pub tuwunel_admin_token: Option<String>,
 
     /// The AppService `hs_token`: the shared secret Tuwunel presents on every
     /// transaction push (ADR 0019). Optional in development.
@@ -80,7 +77,6 @@ impl Config {
             server_name: env_or("NUCK_SERVER_NAME", "localhost"),
             database_url: env_opt("DATABASE_URL"),
             tuwunel_url: env_or("TUWUNEL_URL", "http://localhost:8008"),
-            tuwunel_admin_token: env_opt("TUWUNEL_ADMIN_TOKEN"),
             appservice_hs_token: env_opt("APPSERVICE_HS_TOKEN"),
             appservice_as_token: env_opt("APPSERVICE_AS_TOKEN"),
             appservice_user: env_opt("APPSERVICE_USER"),

@@ -32,6 +32,11 @@ pub async fn client(State(state): State<Arc<AppState>>, req: Request<Body>) -> R
         return ApiErrorResponse::forbidden("registration is handled by /_nuck/v1/register")
             .into_response();
     }
+    // `approval` mode (ADR 0046): the account exists but must not log in until approved.
+    // The client only reaches nuck-server, so gating `/login` is sufficient.
+    if is_login(&req) {
+        return login_or_block(&state, req).await;
+    }
     forward(&state, req).await
 }
 
@@ -147,6 +152,45 @@ fn is_substrate_register(req: &Request<Body>) -> bool {
     req.method() == axum::http::Method::POST
         && path.starts_with("/_matrix/client/")
         && path.ends_with("/register")
+}
+
+/// Whether this is a login request (any C-S version).
+fn is_login(req: &Request<Body>) -> bool {
+    req.method() == axum::http::Method::POST && req.uri().path().ends_with("/login")
+}
+
+/// Refuse a login for a user whose registration is still pending (ADR 0046), else
+/// forward the (buffered) request unchanged.
+async fn login_or_block(state: &AppState, req: Request<Body>) -> Response {
+    let (parts, body) = req.into_parts();
+    let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
+        Ok(bytes) => bytes,
+        Err(_) => return ApiErrorResponse::bad_request("unreadable login body").into_response(),
+    };
+    if let Some(user_id) = login_user(&bytes, &state.config.server_name) {
+        if let Some(projection) = state.projection.as_ref() {
+            match projection.registration_blocked(&user_id).await {
+                Ok(true) => {
+                    return ApiErrorResponse::forbidden("your registration is pending approval")
+                        .into_response();
+                }
+                Ok(false) => {}
+                Err(e) => tracing::warn!("could not check registration state: {e}"),
+            }
+        }
+    }
+    forward(state, Request::from_parts(parts, Body::from(bytes))).await
+}
+
+/// The user id a login body names, normalised to `@localpart:server`.
+fn login_user(bytes: &[u8], server: &str) -> Option<String> {
+    let body: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let user = body.get("identifier")?.get("user")?.as_str()?;
+    if user.starts_with('@') || user.contains(':') {
+        Some(user.to_owned())
+    } else {
+        Some(format!("@{user}:{server}"))
+    }
 }
 
 /// Headers that must not be forwarded between two HTTP hops.

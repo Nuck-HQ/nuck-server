@@ -121,3 +121,14 @@ Verified: `cargo test --workspace` (45 tests) with and without `TEST_DATABASE_UR
 and pruning (updates, removals, append-only rows untouched, idempotency) and
 substrate-outage resilience.
 
+## Update (2026-10-22) — reconciliation reads as the projector
+
+Superseded by [ADR 0046](./0046-no-stored-admin-token.md): the reconciliation loop no
+longer uses the admin API. It reads resolved room state and history **as the projector**
+— a normal member of every guild room — over the C-S API (`GET /rooms/{id}/state`,
+`GET /rooms/{id}/messages`), discovers rooms from the projector's `GET /joined_rooms`,
+and joins with the AppService token. No admin token is held, so reconciliation is **on by
+default** rather than disabled without one. (History is bounded by the room's history
+visibility; guild rooms use `shared`.)
+
+

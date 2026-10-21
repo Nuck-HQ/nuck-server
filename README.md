@@ -68,6 +68,7 @@ LiveKit SFU. The whole stack ships as a multi-container, one-command install.
 | [0043](./docs/adr/0043-state-removal-empty-content.md) | State removal: empty-content encoding (no Matrix state deletion) |
 | [0044](./docs/adr/0044-v1-friends-storage.md) | v1 friends & blocking held in the projection (single server) |
 | [0045](./docs/adr/0045-user-state-key-encoding.md) | User-id state keys encoded (Tuwunel auth constraint) |
+| [0046](./docs/adr/0046-no-stored-admin-token.md) | No stored Tuwunel admin token (projector reads; login-gated approval) |
 
 ## Status
 

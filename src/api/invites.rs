@@ -360,8 +360,7 @@ async fn decide_join_request(
 ///
 /// Redemption and approval are host-authoritative. The bot **invites** the user (it
 /// holds the `invite` power, ADR 0041), which needs no admin token; the client then
-/// accepts. Where an admin token is configured we additionally force-join, so the user
-/// is a member immediately. A user already in a room is a no-op.
+/// accepts. A user already in a room is a no-op.
 async fn force_join(
     state: &AppState,
     guild_id: &str,
@@ -372,11 +371,6 @@ async fn force_join(
     for room_id in std::iter::once(guild_id).chain(channels.iter().map(String::as_str)) {
         if let Err(e) = bot.invite(room_id, user_id).await {
             tracing::warn!(room = %room_id, user = %user_id, "guild invite failed: {e}");
-        }
-        if state.substrate.admin_available() {
-            if let Err(e) = state.substrate.join_user(room_id, user_id).await {
-                tracing::warn!(room = %room_id, user = %user_id, "admin force-join failed: {e}");
-            }
         }
     }
     Ok(())

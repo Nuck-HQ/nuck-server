@@ -56,3 +56,19 @@ CAPTCHA for `open` mode must be **built in nuck-server's registration proxy, or
 dropped** from the plan. Admin-issued tokens also give a ready-made mechanism for the
 `token` mode without config edits.
 
+## Implementation (2026-10-22)
+
+Implemented; see [ADR 0046](./0046-no-stored-admin-token.md) for the no-admin-token
+mechanics.
+
+- All non-`closed` modes create the account through the substrate's ordinary C-S
+  `/register`; nuck-server applies the policy, and the C-S proxy closes the substrate's
+  own `/register` to clients so the policy cannot be bypassed.
+- **`approval` creates the account but gates its login:** nuck-server records the request
+  and refuses that user's `/login` until an admin approves. No admin API, no
+  deactivation, and no plaintext password is stored. Denying marks the request denied —
+  it leaves the queue but keeps blocking login.
+- `closed` returns `403`; the operator creates accounts out of band.
+- The approval queue is gated by `NUCK_ADMIN_USERS` (operator admins, not a guild role).
+
+

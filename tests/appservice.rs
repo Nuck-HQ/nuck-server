@@ -17,7 +17,6 @@ fn app(hs_token: Option<&str>, appservice_user: Option<&str>) -> Router {
         server_name: "test.example.org".to_owned(),
         database_url: None,
         tuwunel_url: "http://localhost:8008".to_owned(),
-        tuwunel_admin_token: None,
         appservice_hs_token: hs_token.map(ToOwned::to_owned),
         appservice_user: appservice_user.map(ToOwned::to_owned),
         appservice_as_token: None,

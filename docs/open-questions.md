@@ -80,7 +80,11 @@ The draft `/_nuck/v1` inventory and its open issues are decided and implemented 
 - **Friends & blocking storage for v1** — the projection, not account data (ADR 0044);
   the account-data + ignore-list mirror is deferred with federation.
 - **Registration** — enforced at `/_nuck/v1/register` (ADR 0037); the substrate's own
-  `/register` is closed off. `approval` needs `TUWUNEL_ADMIN_TOKEN`.
+  `/register` is closed off. `approval` gates login and needs **no** admin token
+  (ADR 0046).
+- **No Tuwunel admin token** — reconciliation reads as the projector; the credential is
+  no longer held (ADR 0046). Admin-only features (retention, unredacted reads) would
+  revisit this deliberately.
 - **Reports** — still deferred (ADR 0016); bans, kick, and the audit log are in.
 - **Search, directory, voice, bots, federation** — still deferred.
 

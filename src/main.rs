@@ -96,16 +96,23 @@ fn write_appservice_registration(config: &Config) {
 
 /// Run the startup reconciliation pass and spawn the periodic loop (ADR 0019).
 ///
-/// Needs both the projection store and the Tuwunel admin API; without either, the
-/// pipeline still works from the AppService push alone, so this only warns.
+/// Reads room state **as the projector** — a normal member of every guild room — so no
+/// admin token is involved (ADR 0046). Needs the projection store and the projector's
+/// AppService identity; without either, the pipeline still works from the AppService
+/// push alone, so this only warns.
 fn spawn_reconciliation(config: &Config, projection: Option<&Projection>, substrate: &SubstrateClient) {
     let Some(projection) = projection else {
         return;
     };
-    if !substrate.admin_available() {
-        tracing::warn!("no TUWUNEL_ADMIN_TOKEN; reconciliation is disabled");
-        return;
-    }
+    let projector = match (&config.appservice_as_token, &config.appservice_user) {
+        (Some(token), Some(user)) => Some((token.clone(), user.clone())),
+        _ => {
+            tracing::warn!(
+                "APPSERVICE_AS_TOKEN / APPSERVICE_USER not set; reconciliation is disabled"
+            );
+            return;
+        }
+    };
 
     let backfill_limit = config
         .message_backfill_limit
@@ -115,7 +122,7 @@ fn spawn_reconciliation(config: &Config, projection: Option<&Projection>, substr
     let reconciler = Reconciler::new(
         projection.clone(),
         substrate.clone(),
-        config.appservice_user.clone(),
+        projector,
         Duration::from_secs(config.reconcile_interval_secs.max(1)),
         backfill_limit,
     );
