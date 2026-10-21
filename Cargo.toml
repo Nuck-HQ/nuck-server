@@ -17,7 +17,7 @@ path = "src/main.rs"
 # released protocol tag; bump deliberately with `cargo update -p nuck-protocol`
 # after tagging a new protocol release. Local co-development is handled by
 # `.cargo/config.toml` (`paths`), which is gitignored.
-nuck-protocol = { git = "https://github.com/nuck-hq/nuck-protocol.git", tag = "v0.2.0" }
+nuck-protocol = { git = "https://github.com/nuck-hq/nuck-protocol.git", tag = "v0.3.0" }
 
 anyhow = "1"
 axum = "0.8"
